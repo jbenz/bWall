@@ -815,7 +815,7 @@ def init_database():
             
             # Initialize default settings if not exist
             default_settings = [
-                ('theme', 'default'),
+                ('theme', 'btheme'),
                 ('system_name', 'bWall'),
                 ('login_banner', ''),
                 ('footer_text', 'bWall by bunit.net'),
@@ -2636,9 +2636,8 @@ def get_user():
     }), 200
 
 @app.route('/api/auth/logout', methods=['POST'])
-@require_auth
 def logout():
-    """Logout user - clears all auth types"""
+    """Logout user - clears all auth types (no auth required - allows logout even with expired sessions)"""
     # Clear ENV auth session
     if 'env_auth_username' in session:
         session.pop('env_auth_username', None)
@@ -4013,7 +4012,7 @@ def get_appearance_settings():
             settings = {row['setting_key']: row['setting_value'] for row in cursor.fetchall()}
             
             return jsonify({
-                'theme': settings.get('theme', 'default'),
+                'theme': settings.get('theme', 'btheme'),
                 'system_name': settings.get('system_name', 'bWall'),
                 'login_banner': settings.get('login_banner', '')
             })
@@ -4027,7 +4026,7 @@ def get_appearance_settings():
 def update_appearance_settings():
     """Update appearance and branding settings"""
     data = request.json
-    theme = data.get('theme', 'default')
+    theme = data.get('theme', 'btheme')
     system_name = data.get('system_name', 'bWall')
     login_banner = data.get('login_banner', '')
     
@@ -4144,7 +4143,7 @@ def get_public_settings():
     conn = get_db_connection()
     if not conn:
         return jsonify({
-            'theme': 'default',
+            'theme': 'btheme',
             'system_name': 'bWall',
             'login_banner': '',
             'footer_text': 'bWall by bunit.net'
@@ -4160,14 +4159,14 @@ def get_public_settings():
             settings = {row['setting_key']: row['setting_value'] for row in cursor.fetchall()}
             
             return jsonify({
-                'theme': settings.get('theme', 'default'),
+                'theme': settings.get('theme', 'btheme'),
                 'system_name': settings.get('system_name', 'bWall'),
                 'login_banner': settings.get('login_banner', ''),
                 'footer_text': settings.get('footer_text', 'bWall by bunit.net')
             })
     except Exception as e:
         return jsonify({
-            'theme': 'default',
+            'theme': 'btheme',
             'system_name': 'bWall',
             'login_banner': '',
             'footer_text': 'bWall by bunit.net'

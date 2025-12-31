@@ -92,7 +92,16 @@ SERVER_HOST=0.0.0.0
 SERVER_PORT=5000
 SECRET_KEY=your_secret_key
 
-# OIDC (Optional)
+# Authentication (Optional)
+# AUTH_TYPE can be: ENV, OIDC, LOCAL, or comma-separated (e.g., "ENV,OIDC")
+# If not specified, defaults to OIDC if configured, otherwise LOCAL
+AUTH_TYPE=ENV,OIDC  # Try ENV first, then OIDC, then LOCAL
+
+# ENV Authentication (if AUTH_TYPE includes ENV)
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=your_secure_password
+
+# OIDC Authentication (if AUTH_TYPE includes OIDC)
 OIDC_ISSUER_URL=https://your-oidc-provider
 OIDC_CLIENT_ID=your_client_id
 OIDC_CLIENT_SECRET=your_client_secret

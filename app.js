@@ -1252,8 +1252,17 @@ async function loadPublicSettings() {
             
             // Apply theme
             document.body.className = document.body.className.replace(/dark-theme|btheme/g, '').trim();
-            if (settings.theme && settings.theme !== 'default') {
-                document.body.classList.add(settings.theme === 'dark' ? 'dark-theme' : 'btheme');
+            // Apply theme - btheme is now the default
+            if (settings.theme) {
+                if (settings.theme === 'dark') {
+                    document.body.classList.add('dark-theme');
+                } else {
+                    // btheme is default, also handle legacy 'default' as btheme
+                    document.body.classList.add('btheme');
+                }
+            } else {
+                // No theme set, use btheme as default
+                document.body.classList.add('btheme');
             }
             
             // Update system name
@@ -1287,7 +1296,7 @@ async function loadAppearanceSettings() {
         if (response.ok) {
             const settings = await response.json();
             
-            document.getElementById('app-theme').value = settings.theme || 'default';
+            document.getElementById('app-theme').value = settings.theme || 'btheme';
             document.getElementById('system-name').value = settings.system_name || 'bWall';
             document.getElementById('login-banner').value = settings.login_banner || '';
         }
@@ -1421,7 +1430,7 @@ function updateUserInterface() {
 
 async function logout() {
     try {
-        const response = await fetch(`${API_BASE}/auth/logout`, {
+        const response = await fetch(`${API_BASE}/api/auth/logout`, {
             method: 'POST',
             credentials: 'include'
         });

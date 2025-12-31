@@ -183,7 +183,7 @@
         
         /* bTheme support */
         body.btheme {
-            background: linear-gradient(135deg, #ff8c00 0%, #ff7f00 100%);
+            background: linear-gradient(135deg, #ffb347 0%, #ff8c00 30%, #ff6600 70%, #cc4400 100%);
         }
         
         body.btheme .login-container {
@@ -256,14 +256,13 @@
                     footerDiv.textContent = 'bWall by bunit.net';
                 }
                 
-                // Apply theme
-                if (data.theme) {
-                    document.body.className = '';
-                    if (data.theme === 'dark') {
-                        document.body.classList.add('dark-theme');
-                    } else if (data.theme === 'btheme') {
-                        document.body.classList.add('btheme');
-                    }
+                // Apply theme - btheme is now the default
+                document.body.className = '';
+                if (data.theme === 'dark') {
+                    document.body.classList.add('dark-theme');
+                } else {
+                    // btheme is default, also handle legacy 'default' as btheme
+                    document.body.classList.add('btheme');
                 }
             } catch (error) {
                 console.error('Error loading public settings:', error);
