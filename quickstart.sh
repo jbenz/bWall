@@ -820,6 +820,35 @@ STARTER
 chmod +x start_bwall.sh
 print_success "Startup script created: start_bwall.sh"
 
+# Step 8: Systemd Service Installation (Optional)
+print_info "Step 8: Systemd Service Installation (Optional)"
+echo ""
+echo "Would you like to install bWall as a systemd service?"
+echo "This will allow bWall to start automatically at boot time."
+echo ""
+read -p "Install systemd service? (y/n): " -n 1 -r
+echo ""
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    if [ -f "install_systemd_service.sh" ]; then
+        print_info "Installing systemd service..."
+        chmod +x install_systemd_service.sh
+        ./install_systemd_service.sh
+        if [ $? -eq 0 ]; then
+            print_success "Systemd service installed and enabled"
+        else
+            print_warning "Systemd service installation had issues, but you can install it later with:"
+            echo "  sudo ./install_systemd_service.sh"
+        fi
+    else
+        print_warning "install_systemd_service.sh not found. You can install the service later with:"
+        echo "  sudo ./install_systemd_service.sh"
+    fi
+else
+    print_info "Skipping systemd service installation."
+    echo "You can install it later with: sudo ./install_systemd_service.sh"
+fi
+echo ""
+
 echo ""
 
 # Summary
@@ -841,6 +870,7 @@ echo ""
 print_info "Next steps:"
 echo "  1. Review the .env file and adjust if needed"
 echo "  2. Start the application: ./start_bwall.sh"
+echo "     Or install systemd service: sudo ./install_systemd_service.sh"
 echo "  3. Access the dashboard: http://localhost:5000"
 echo ""
 print_info "Log file: $LOG_FILE"
