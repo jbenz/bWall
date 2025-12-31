@@ -144,6 +144,112 @@ echo "=== End Diagnostic ==="
 4. **Verify file paths** - Make sure all files are in the same directory
 5. **Restart Flask** - Stop and restart the application
 
+## Python 3.13 Compatibility Issues
+
+### Issue: ModuleNotFoundError: No module named 'pkg_resources'
+
+**Problem:** The `flask_pyoidc` package requires `pkg_resources`, which is provided by `setuptools`. In Python 3.13, `setuptools` is not always included by default.
+
+**Solution:**
+```bash
+pip3 install --upgrade setuptools
+# Or reinstall all requirements
+pip3 install -r requirements.txt
+```
+
+The `requirements.txt` file includes `setuptools>=65.0.0` to prevent this issue.
+
+### Issue: re.PatternError with Python 3.13
+
+**Problem:** Python 3.13 has stricter regex parsing that's incompatible with older versions of the `future` package used by `flask_pyoidc`.
+
+**Error Message:**
+```
+re.PatternError: global flags not at the start of the expression at position 5
+```
+
+**Solution:** The application automatically detects Python 3.13 and disables OIDC authentication gracefully. The application will run normally without OIDC.
+
+**Status:**
+- ✅ Application will start and run - OIDC is automatically disabled on Python 3.13
+- ⚠️ OIDC authentication unavailable - You'll need to use Python 3.11 or 3.12 for OIDC support
+
+**Options:**
+
+1. **Run Without OIDC (Recommended for now)**
+   ```bash
+   ./start_bwall.sh
+   ```
+   You'll see a warning message, but the application will run normally.
+
+2. **Use Python 3.12 (For OIDC Support)**
+   ```bash
+   # Install Python 3.12
+   apt-get update
+   apt-get install -y python3.12 python3.12-venv python3.12-pip
+   
+   # Create virtual environment
+   python3.12 -m venv venv
+   source venv/bin/activate
+   
+   # Install requirements
+   pip install -r requirements.txt
+   
+   # Run application
+   python app.py
+   ```
+
+3. **Wait for Package Updates**
+   Monitor the `future` package for Python 3.13 compatibility:
+   - https://github.com/PythonCharmers/future
+   - https://pypi.org/project/future/
+
+**What Changed:**
+1. Automatic Detection: The app detects Python 3.13 and disables OIDC imports
+2. Graceful Degradation: Application runs without OIDC instead of crashing
+3. Clear Warnings: You'll see informative messages about OIDC being disabled
+
+**Security Note:**
+Without OIDC, the application runs without authentication. For production use:
+- Use a reverse proxy (nginx/Apache) with authentication
+- Restrict network access to the application
+- Use firewall rules to limit access
+- Consider using Python 3.12 for full OIDC support
+
+## Database Connection Issues
+
+### Issue: Access denied for user
+
+**Error:** `(1045, "Access denied for user 'iptables_user'@'localhost' (using password: YES)")`
+
+**Solution:** Use the diagnostic script:
+```bash
+./fix_db_connection.sh
+```
+
+Or manually check:
+1. Verify credentials in `.env` file
+2. Test connection: `mysql -u iptables_user -p iptables_db`
+3. Check user privileges: `SHOW GRANTS FOR 'iptables_user'@'localhost';`
+
+## Iptables Rule Ordering Issues
+
+### Issue: Bans being placed before whitelist entries
+
+**Problem:** Rules are not in the correct order (whitelist should come first).
+
+**Solution:**
+```bash
+sudo ./fix_iptables_order.sh
+```
+
+Or use the sync script:
+```bash
+sudo python3 sync_rules.py
+```
+
+The application now uses separate chains (`BWALL_WHITELIST`, `BWALL_BLACKLIST`, `BWALL_RULES`) to ensure correct ordering.
+
 ## Getting Help
 
 When reporting issues, include:
@@ -152,4 +258,5 @@ When reporting issues, include:
 - Flask server output/errors
 - Python version (`python3 --version`)
 - Operating system
+- Any error messages from the troubleshooting scripts
 

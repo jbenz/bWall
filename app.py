@@ -26,21 +26,26 @@ from werkzeug.utils import secure_filename
 
 # Load environment variables from .env file
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from utils import load_env_file
+    load_env_file()
 except ImportError:
-    # Fallback: Load .env manually if python-dotenv is not installed
-    if os.path.exists('.env'):
-        print("[INFO] Loading .env file manually (python-dotenv not installed)...")
-        with open('.env') as f:
-            for line in f:
-                line = line.strip()
-                if '=' in line and not line.startswith('#'):
-                    key, value = line.split('=', 1)
-                    os.environ[key.strip()] = value.strip()
-        print("[INFO] .env file loaded successfully")
-    else:
-        print("[INFO] No .env file found, using environment variables or defaults")
+    # Fallback if utils.py not available
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        # Fallback: Load .env manually if python-dotenv is not installed
+        if os.path.exists('.env'):
+            print("[INFO] Loading .env file manually (python-dotenv not installed)...")
+            with open('.env') as f:
+                for line in f:
+                    line = line.strip()
+                    if '=' in line and not line.startswith('#'):
+                        key, value = line.split('=', 1)
+                        os.environ[key.strip()] = value.strip()
+            print("[INFO] .env file loaded successfully")
+        else:
+            print("[INFO] No .env file found, using environment variables or defaults")
 
 # Check Python version - OIDC has known issues with Python 3.13
 # The 'future' package used by flask_pyoidc has regex compatibility issues with Python 3.13

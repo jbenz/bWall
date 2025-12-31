@@ -12,18 +12,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Try to load .env if it exists
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from utils import load_env_file
+    load_env_file()
 except ImportError:
-    # If dotenv not available, try to load .env manually
-    if os.path.exists('.env'):
-        print("[INFO] Loading .env file manually (dotenv not available)...")
-        with open('.env') as f:
-            for line in f:
-                line = line.strip()
-                if '=' in line and not line.startswith('#'):
-                    key, value = line.split('=', 1)
-                    os.environ[key.strip()] = value.strip()
+    # Fallback if utils.py not available
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        # If dotenv not available, try to load .env manually
+        if os.path.exists('.env'):
+            print("[INFO] Loading .env file manually (dotenv not available)...")
+            with open('.env') as f:
+                for line in f:
+                    line = line.strip()
+                    if '=' in line and not line.startswith('#'):
+                        key, value = line.split('=', 1)
+                        os.environ[key.strip()] = value.strip()
 
 # Now import app components
 try:
@@ -94,10 +99,15 @@ def main():
 
 if __name__ == '__main__':
     # Check if running as root
-    if os.geteuid() != 0:
-        print("[ERROR] This script must be run as root (for iptables access)")
-        print("  Run with: sudo python3 sync_rules.py")
-        sys.exit(1)
+    try:
+        from utils import require_root
+        require_root()
+    except ImportError:
+        # Fallback if utils.py not available
+        if os.geteuid() != 0:
+            print("[ERROR] This script must be run as root (for iptables access)")
+            print("  Run with: sudo python3 sync_rules.py")
+            sys.exit(1)
     
     main()
 
