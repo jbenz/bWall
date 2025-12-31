@@ -23,6 +23,48 @@
 
 ## Installation
 
+### Quick Start (Recommended)
+
+You have two options for installation:
+
+#### Option 1: Web-Based Installer (Easiest)
+
+1. Start the application (even without full setup):
+   ```bash
+   python3 app.py
+   ```
+
+2. Open your browser and navigate to:
+   ```
+   http://localhost:5000/installer
+   ```
+
+3. Follow the web-based installation wizard which will:
+   - Check prerequisites
+   - Configure database
+   - Set up OIDC/PocketID authentication
+   - Install Python packages
+   - Create configuration files
+
+#### Option 2: Command-Line Quickstart Script
+
+Run the automated quickstart script:
+
+```bash
+./quickstart.sh
+```
+
+This script will:
+- Check and install prerequisites
+- Check for MariaDB and offer to install if needed
+- Install Python dependencies
+- Set up the database with views and stored procedures
+- Configure OIDC/PocketID authentication interactively
+- Create environment configuration file
+- Generate a startup script
+
+### Manual Installation
+
 1. **Clone or download this repository**
 
 2. **Install Python dependencies:**
@@ -78,23 +120,39 @@
 
 6. **Run the application:**
    
-   **Important**: The application needs root privileges to manage iptables:
+   If you used the quickstart script, simply run:
    ```bash
+   ./start_bwall.sh
+   ```
+   
+   Or manually:
+   ```bash
+   # Load environment variables
+   export $(cat .env | grep -v '^#' | xargs)
+   
+   # Run with sudo (required for iptables)
    sudo python3 app.py
    ```
    
-   Or use a user with sudo access and configure sudoers appropriately.
+   **Important**: The application needs root privileges to manage iptables.
 
-7. **Access the dashboard:**
+7. **Access the application:**
    
-   Open your browser and navigate to:
-   ```
-   http://localhost:5000
-   ```
+   The application runs on `0.0.0.0:5000` by default, making it accessible from:
+   - Localhost: `http://localhost:5000`
+   - Network IP: `http://<server-ip>:5000`
+   
+   **Access points:**
+   - **Dashboard**: `http://localhost:5000/` (or your server IP)
+   - **Web Installer**: `http://localhost:5000/installer` (or your server IP)
+   
+   If the application is not configured, accessing the root URL will automatically redirect to the installer.
    
    If OIDC is configured, you will be redirected to PocketID for authentication. After successful login, you'll be redirected back to the dashboard.
    
    **For detailed OIDC setup instructions, see [OIDC_SETUP.md](OIDC_SETUP.md)**
+   
+   **Note**: When running on `0.0.0.0`, the application is accessible from all network interfaces. For production, use a reverse proxy and restrict access.
    
    **For detailed OIDC setup instructions, see [OIDC_SETUP.md](OIDC_SETUP.md)**
 
@@ -290,8 +348,10 @@ All API endpoints (except `/api/auth/logout`) require OIDC authentication if con
 ├── requirements.txt    # Python dependencies
 ├── README.md           # This file
 ├── OIDC_SETUP.md       # PocketID OIDC setup guide
-├── setup_db.sh         # Database setup script
-└── start.sh            # Application startup script
+├── quickstart.sh       # Automated installation and setup script (recommended)
+├── setup_db.sh         # Manual database setup script
+├── start.sh            # Application startup script
+└── start_bwall.sh      # Startup script with .env loading (created by quickstart.sh)
 ```
 
 ### Adding Features

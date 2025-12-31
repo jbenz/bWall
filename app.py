@@ -18,6 +18,15 @@ from werkzeug.utils import secure_filename
 from flask_pyoidc import OIDCAuthentication
 from flask_pyoidc.provider_configuration import ProviderConfiguration, ClientMetadata
 
+# Load environment variables from .env file if it exists
+if os.path.exists('.env'):
+    with open('.env', 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ[key.strip()] = value.strip()
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-this-secret-key-in-production')
 
@@ -25,11 +34,18 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-this-secret-key-in-pr
 OIDC_ISSUER = os.getenv('OIDC_ISSUER', 'https://your-pocketid-instance.example.com')
 OIDC_CLIENT_ID = os.getenv('OIDC_CLIENT_ID', '')
 OIDC_CLIENT_SECRET = os.getenv('OIDC_CLIENT_SECRET', '')
-OIDC_REDIRECT_URI = os.getenv('OIDC_REDIRECT_URI', 'http://localhost:5000/oidc_callback')
-OIDC_POST_LOGOUT_REDIRECT_URI = os.getenv('OIDC_POST_LOGOUT_REDIRECT_URI', 'http://localhost:5000/')
+# Get host from environment or default to localhost
+APP_HOST = os.getenv('APP_HOST', '0.0.0.0')
+APP_PORT = int(os.getenv('APP_PORT', '5000'))
+BASE_URL = os.getenv('BASE_URL', f'http://{APP_HOST if APP_HOST != "0.0.0.0" else "localhost"}:{APP_PORT}')
+
+OIDC_REDIRECT_URI = os.getenv('OIDC_REDIRECT_URI', f'{BASE_URL}/oidc_callback')
+OIDC_POST_LOGOUT_REDIRECT_URI = os.getenv('OIDC_POST_LOGOUT_REDIRECT_URI', f'{BASE_URL}/')
 
 # Configure CORS with credentials support for OIDC
-CORS(app, supports_credentials=True, origins=os.getenv('CORS_ORIGINS', 'http://localhost:5000').split(','))
+# Allow all origins for installer, restrict for production
+cors_origins = os.getenv('CORS_ORIGINS', f'{BASE_URL},http://localhost:{APP_PORT},http://127.0.0.1:{APP_PORT}')
+CORS(app, supports_credentials=True, origins=cors_origins.split(','))
 
 # Initialize OIDC Authentication if configured
 auth = None
@@ -87,6 +103,10 @@ def get_user_info():
 def get_db_connection():
     """Create and return a database connection"""
     try:
+        # Check if database is configured
+        if not all([DB_CONFIG.get('host'), DB_CONFIG.get('user'), 
+                   DB_CONFIG.get('password'), DB_CONFIG.get('database')]):
+            return None
         return pymysql.connect(**DB_CONFIG)
     except Exception as e:
         print(f"Database connection error: {e}")
@@ -249,12 +269,14 @@ def get_stats():
     """Get dashboard statistics"""
     conn = get_db_connection()
     if not conn:
+        # Return error if database not configured
         return jsonify({
+            'error': 'Database not configured',
             'total_rules': 0,
             'whitelist_count': 0,
             'blacklist_count': 0,
             'db_connected': False
-        })
+        }), 503
     
     try:
         with conn.cursor() as cursor:
@@ -857,10 +879,56 @@ def sync():
     return jsonify(result)
 
 @app.route('/')
-@require_auth
 def index():
-    """Serve the dashboard HTML"""
-    return send_file('index.html')
+    """Serve the dashboard HTML or redirect to installer if not configured"""
+    # Check if .env exists and has database config
+    if not os.path.exists('.env'):
+        # No configuration, redirect to installer
+        return redirect('/installer')
+    
+    # Reload env vars from .env file to check current state
+    if os.path.exists('.env'):
+        with open('.env', 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip()
+    
+    # Check if database is configured
+    db_configured = all([
+        os.getenv('DB_HOST'),
+        os.getenv('DB_USER'),
+        os.getenv('DB_PASSWORD'),
+        os.getenv('DB_NAME')
+    ])
+    
+    if not db_configured:
+        # Database not configured, redirect to installer
+        return redirect('/installer')
+    
+    # Database configured, require auth and serve dashboard
+    @require_auth
+    def serve_dashboard():
+        return send_file('index.html')
+    
+    return serve_dashboard()
+
+@app.route('/installer')
+def installer():
+    """Serve the web installer (no auth required, accessible on all interfaces)"""
+    try:
+        return send_file('installer.html')
+    except FileNotFoundError:
+        return jsonify({'error': 'Installer not found'}), 404
+
+@app.route('/installer.js')
+def installer_js():
+    """Serve installer JavaScript (no auth required)"""
+    try:
+        return send_file('installer.js', mimetype='application/javascript')
+    except FileNotFoundError:
+        return jsonify({'error': 'Installer script not found'}), 404
 
 @app.route('/api/auth/user', methods=['GET'])
 @require_auth
@@ -881,16 +949,565 @@ def logout():
         return auth.logout()
     return jsonify({'message': 'Logged out'}), 200
 
-if __name__ == '__main__':
-    # Initialize database on startup
-    print("Initializing database...")
-    if init_database():
-        print("Database initialized successfully")
-    else:
-        print("Warning: Database initialization failed. Some features may not work.")
+# Installer API Routes (no auth required for installation)
+@app.route('/api/installer/prerequisites', methods=['GET'])
+def installer_prerequisites():
+    """Check system prerequisites"""
+    import platform
+    import subprocess
     
-    print("Starting bWall Firewall Management Dashboard API...")
-    print("bWall by bunit.net - https://bunit.net")
+    prerequisites = []
+    
+    # Check Python
+    try:
+        version = platform.python_version()
+        prerequisites.append({
+            'name': 'Python 3',
+            'status': 'ok',
+            'version': version
+        })
+    except:
+        prerequisites.append({
+            'name': 'Python 3',
+            'status': 'error',
+            'message': 'Python 3 not found'
+        })
+    
+    # Check pip
+    try:
+        result = subprocess.run(['pip3', '--version'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            prerequisites.append({
+                'name': 'pip',
+                'status': 'ok',
+                'version': result.stdout.strip().split()[1] if len(result.stdout.split()) > 1 else 'installed'
+            })
+        else:
+            prerequisites.append({
+                'name': 'pip',
+                'status': 'error',
+                'message': 'pip not found'
+            })
+    except:
+        prerequisites.append({
+            'name': 'pip',
+            'status': 'error',
+            'message': 'Cannot check pip'
+        })
+    
+    # Check iptables
+    try:
+        result = subprocess.run(['iptables', '--version'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            prerequisites.append({
+                'name': 'iptables',
+                'status': 'ok',
+                'version': result.stdout.strip()
+            })
+        else:
+            prerequisites.append({
+                'name': 'iptables',
+                'status': 'error',
+                'message': 'iptables not found'
+            })
+    except:
+        prerequisites.append({
+            'name': 'iptables',
+            'status': 'error',
+            'message': 'Cannot check iptables'
+        })
+    
+    # Check MariaDB/MySQL
+    try:
+        result = subprocess.run(['mysql', '--version'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            prerequisites.append({
+                'name': 'MariaDB/MySQL Client',
+                'status': 'ok',
+                'version': result.stdout.strip()
+            })
+        else:
+            prerequisites.append({
+                'name': 'MariaDB/MySQL Client',
+                'status': 'warning',
+                'message': 'Client not found (server may still be available)'
+            })
+    except:
+        prerequisites.append({
+            'name': 'MariaDB/MySQL Client',
+            'status': 'warning',
+            'message': 'Cannot check MySQL client'
+        })
+    
+    return jsonify({'prerequisites': prerequisites})
+
+@app.route('/api/installer/test-database', methods=['POST'])
+def installer_test_database():
+    """Test database connection"""
+    data = request.json
+    
+    try:
+        conn = pymysql.connect(
+            host=data['host'],
+            user=data['root_user'],
+            password=data['root_password'],
+            charset='utf8mb4'
+        )
+        
+        # Test connection
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+        
+        # Check if database exists
+        with conn.cursor() as cursor:
+            cursor.execute("SHOW DATABASES LIKE %s", (data['name'],))
+            db_exists = cursor.fetchone() is not None
+        
+        # Check if user exists
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT User FROM mysql.user WHERE User = %s AND Host = 'localhost'", (data['user'],))
+            user_exists = cursor.fetchone() is not None
+        
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Database connection successful',
+            'database_exists': db_exists,
+            'user_exists': user_exists
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 400
+
+@app.route('/api/installer/install', methods=['POST'])
+def installer_install():
+    """Run installation process"""
+    from flask import Response
+    import threading
+    import queue
+    
+    data = request.json
+    
+    def install_process():
+        """Installation process generator"""
+        try:
+            # Step 1: Install Python packages
+            yield {'progress': 10, 'status': 'Installing Python packages...', 
+                   'log': {'message': 'Installing Python requirements...', 'type': 'info'}}
+            
+            import subprocess
+            result = subprocess.run(['pip3', 'install', '-r', 'requirements.txt'], 
+                                  capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                yield {'error': f'Failed to install packages: {result.stderr}'}
+                return
+            
+            yield {'progress': 30, 'status': 'Setting up database...',
+                   'log': {'message': 'Python packages installed', 'type': 'success'}}
+            
+            # Step 2: Setup database
+            yield {'progress': 40, 'status': 'Creating database...',
+                   'log': {'message': 'Creating database and user...', 'type': 'info'}}
+            
+            db_data = data['database']
+            conn = pymysql.connect(
+                host=db_data['host'],
+                user=db_data['root_user'],
+                password=db_data['root_password'],
+                charset='utf8mb4'
+            )
+            
+            with conn.cursor() as cursor:
+                # Create database
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_data['name']} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                
+                # Create user
+                cursor.execute(f"CREATE USER IF NOT EXISTS '{db_data['user']}'@'localhost' IDENTIFIED BY '{db_data['password']}'")
+                cursor.execute(f"GRANT ALL PRIVILEGES ON {db_data['name']}.* TO '{db_data['user']}'@'localhost'")
+                cursor.execute("FLUSH PRIVILEGES")
+            
+            conn.close()
+            
+            yield {'progress': 50, 'status': 'Creating database schema...',
+                   'log': {'message': 'Database and user created', 'type': 'success'}}
+            
+            # Step 3: Create schema
+            yield {'progress': 55, 'status': 'Creating database tables...',
+                   'log': {'message': 'Creating database schema...', 'type': 'info'}}
+            
+            conn = pymysql.connect(
+                host=db_data['host'],
+                user=db_data['root_user'],
+                password=db_data['root_password'],
+                database=db_data['name'],
+                charset='utf8mb4'
+            )
+            
+            # Create all tables
+            schema_sql = """
+            CREATE TABLE IF NOT EXISTS whitelist (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ip_address VARCHAR(45) NOT NULL UNIQUE,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_ip (ip_address),
+                INDEX idx_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+            CREATE TABLE IF NOT EXISTS blacklist (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ip_address VARCHAR(45) NOT NULL UNIQUE,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_ip (ip_address),
+                INDEX idx_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+            CREATE TABLE IF NOT EXISTS rules (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                chain VARCHAR(50),
+                target VARCHAR(50),
+                protocol VARCHAR(10),
+                source VARCHAR(45),
+                destination VARCHAR(45),
+                options TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_chain (chain),
+                INDEX idx_source (source)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                action VARCHAR(50) NOT NULL,
+                type VARCHAR(20),
+                entry VARCHAR(255),
+                status VARCHAR(20),
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_timestamp (timestamp),
+                INDEX idx_type (type),
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+            CREATE TABLE IF NOT EXISTS sync_log (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                direction VARCHAR(20),
+                whitelist_synced INT DEFAULT 0,
+                blacklist_synced INT DEFAULT 0,
+                rules_synced INT DEFAULT 0,
+                status VARCHAR(20),
+                message TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_timestamp (timestamp),
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+            """
+            
+            with conn.cursor() as cursor:
+                for statement in schema_sql.split(';'):
+                    if statement.strip():
+                        cursor.execute(statement)
+            
+            conn.commit()
+            conn.close()
+            
+            yield {'progress': 65, 'status': 'Creating database views...',
+                   'log': {'message': 'Database tables created', 'type': 'success'}}
+            
+            # Create views
+            conn = pymysql.connect(
+                host=db_data['host'],
+                user=db_data['root_user'],
+                password=db_data['root_password'],
+                database=db_data['name'],
+                charset='utf8mb4'
+            )
+            
+            views_sql = """
+            CREATE OR REPLACE VIEW v_recent_activity AS
+            SELECT 
+                DATE(timestamp) as date,
+                type,
+                status,
+                COUNT(*) as count
+            FROM activity_log
+            WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+            GROUP BY DATE(timestamp), type, status
+            ORDER BY date DESC, type, status;
+
+            CREATE OR REPLACE VIEW v_whitelist_summary AS
+            SELECT 
+                COUNT(*) as total_entries,
+                COUNT(DISTINCT SUBSTRING_INDEX(ip_address, '/', 1)) as unique_ips,
+                MIN(created_at) as first_entry,
+                MAX(created_at) as last_entry
+            FROM whitelist;
+
+            CREATE OR REPLACE VIEW v_blacklist_summary AS
+            SELECT 
+                COUNT(*) as total_entries,
+                COUNT(DISTINCT SUBSTRING_INDEX(ip_address, '/', 1)) as unique_ips,
+                MIN(created_at) as first_entry,
+                MAX(created_at) as last_entry
+            FROM blacklist;
+
+            CREATE OR REPLACE VIEW v_sync_status AS
+            SELECT 
+                direction,
+                SUM(whitelist_synced) as total_whitelist_synced,
+                SUM(blacklist_synced) as total_blacklist_synced,
+                SUM(rules_synced) as total_rules_synced,
+                COUNT(*) as sync_count,
+                MAX(timestamp) as last_sync
+            FROM sync_log
+            GROUP BY direction;
+            """
+            
+            with conn.cursor() as cursor:
+                for statement in views_sql.split(';'):
+                    if statement.strip():
+                        try:
+                            cursor.execute(statement)
+                        except Exception as e:
+                            # View might already exist, continue
+                            pass
+            
+            conn.commit()
+            conn.close()
+            
+            yield {'progress': 75, 'status': 'Creating stored procedures...',
+                   'log': {'message': 'Database views created', 'type': 'success'}}
+            
+            # Create stored procedures
+            conn = pymysql.connect(
+                host=db_data['host'],
+                user=db_data['root_user'],
+                password=db_data['root_password'],
+                database=db_data['name'],
+                charset='utf8mb4'
+            )
+            
+            procedures_sql = """
+            DELIMITER //
+
+            CREATE PROCEDURE IF NOT EXISTS sp_daily_activity_report(IN days INT)
+            BEGIN
+                SELECT 
+                    DATE(timestamp) as date,
+                    action,
+                    type,
+                    status,
+                    COUNT(*) as count
+                FROM activity_log
+                WHERE timestamp >= DATE_SUB(NOW(), INTERVAL days DAY)
+                GROUP BY DATE(timestamp), action, type, status
+                ORDER BY date DESC, action, type;
+            END //
+
+            CREATE PROCEDURE IF NOT EXISTS sp_top_blocked_ips(IN limit_count INT)
+            BEGIN
+                SELECT 
+                    ip_address,
+                    description,
+                    created_at,
+                    (SELECT COUNT(*) FROM activity_log 
+                     WHERE entry = blacklist.ip_address AND type = 'blacklist') as block_count
+                FROM blacklist
+                ORDER BY created_at DESC
+                LIMIT limit_count;
+            END //
+
+            CREATE PROCEDURE IF NOT EXISTS sp_sync_statistics(IN days INT)
+            BEGIN
+                SELECT 
+                    direction,
+                    COUNT(*) as total_syncs,
+                    SUM(whitelist_synced) as total_whitelist,
+                    SUM(blacklist_synced) as total_blacklist,
+                    SUM(rules_synced) as total_rules,
+                    AVG(whitelist_synced + blacklist_synced + rules_synced) as avg_entries_per_sync,
+                    MAX(timestamp) as last_sync
+                FROM sync_log
+                WHERE timestamp >= DATE_SUB(NOW(), INTERVAL days DAY)
+                GROUP BY direction;
+            END //
+
+            DELIMITER ;
+            """
+            
+            with conn.cursor() as cursor:
+                # Execute procedures one by one (DELIMITER doesn't work in PyMySQL)
+                cursor.execute("""
+                    CREATE PROCEDURE IF NOT EXISTS sp_daily_activity_report(IN days INT)
+                    BEGIN
+                        SELECT 
+                            DATE(timestamp) as date,
+                            action,
+                            type,
+                            status,
+                            COUNT(*) as count
+                        FROM activity_log
+                        WHERE timestamp >= DATE_SUB(NOW(), INTERVAL days DAY)
+                        GROUP BY DATE(timestamp), action, type, status
+                        ORDER BY date DESC, action, type;
+                    END
+                """)
+                cursor.execute("""
+                    CREATE PROCEDURE IF NOT EXISTS sp_top_blocked_ips(IN limit_count INT)
+                    BEGIN
+                        SELECT 
+                            ip_address,
+                            description,
+                            created_at,
+                            (SELECT COUNT(*) FROM activity_log 
+                             WHERE entry = blacklist.ip_address AND type = 'blacklist') as block_count
+                        FROM blacklist
+                        ORDER BY created_at DESC
+                        LIMIT limit_count;
+                    END
+                """)
+                cursor.execute("""
+                    CREATE PROCEDURE IF NOT EXISTS sp_sync_statistics(IN days INT)
+                    BEGIN
+                        SELECT 
+                            direction,
+                            COUNT(*) as total_syncs,
+                            SUM(whitelist_synced) as total_whitelist,
+                            SUM(blacklist_synced) as total_blacklist,
+                            SUM(rules_synced) as total_rules,
+                            AVG(whitelist_synced + blacklist_synced + rules_synced) as avg_entries_per_sync,
+                            MAX(timestamp) as last_sync
+                        FROM sync_log
+                        WHERE timestamp >= DATE_SUB(NOW(), INTERVAL days DAY)
+                        GROUP BY direction;
+                    END
+                """)
+            
+            conn.commit()
+            conn.close()
+            
+            yield {'progress': 70, 'status': 'Creating configuration...',
+                   'log': {'message': 'Database schema created', 'type': 'success'}}
+            
+            # Step 4: Create .env file
+            env_content = f"""# bWall Configuration
+# Generated by web installer on {datetime.now().isoformat()}
+
+# Database Configuration
+DB_HOST={db_data['host']}
+DB_USER={db_data['user']}
+DB_PASSWORD={db_data['password']}
+DB_NAME={db_data['name']}
+
+# OIDC Configuration
+"""
+            
+            if data.get('oidc'):
+                import secrets
+                secret_key = secrets.token_hex(32)
+                oidc = data['oidc']
+                env_content += f"""OIDC_ISSUER={oidc['issuer']}
+OIDC_CLIENT_ID={oidc['client_id']}
+OIDC_CLIENT_SECRET={oidc['client_secret']}
+OIDC_REDIRECT_URI={oidc['redirect_uri']}
+OIDC_POST_LOGOUT_REDIRECT_URI={oidc['post_logout_uri']}
+SECRET_KEY={secret_key}
+"""
+            else:
+                env_content += """# OIDC not configured
+# OIDC_ISSUER=
+# OIDC_CLIENT_ID=
+# OIDC_CLIENT_SECRET=
+# OIDC_REDIRECT_URI=
+# OIDC_POST_LOGOUT_REDIRECT_URI=
+# SECRET_KEY=
+"""
+            
+            with open('.env', 'w') as f:
+                f.write(env_content)
+            
+            os.chmod('.env', 0o600)
+            
+            yield {'progress': 90, 'status': 'Finalizing...',
+                   'log': {'message': 'Configuration file created', 'type': 'success'}}
+            
+            yield {'progress': 100, 'status': 'Installation complete!',
+                   'log': {'message': 'Installation completed successfully!', 'type': 'success'},
+                   'complete': True}
+            
+        except Exception as e:
+            yield {'error': str(e), 'log': {'message': f'Error: {str(e)}', 'type': 'error'}}
+    
+    def generate():
+        """Generator for streaming installation progress"""
+        for update in install_process():
+            yield json.dumps(update) + '\n'
+    
+    return Response(generate(), mimetype='application/json')
+
+if __name__ == '__main__':
+    # Get configuration
+    host = os.getenv('APP_HOST', '0.0.0.0')
+    port = int(os.getenv('APP_PORT', '5000'))
+    
+    print("=" * 60)
+    print("  bWall - Firewall Management Dashboard")
+    print("  by bunit.net - https://bunit.net")
+    print("=" * 60)
+    print()
+    
+    # Check if .env exists
+    if os.path.exists('.env'):
+        print("✓ Configuration file (.env) found")
+        
+        # Try to initialize database if configured
+        db_configured = all([
+            os.getenv('DB_HOST'),
+            os.getenv('DB_USER'),
+            os.getenv('DB_PASSWORD'),
+            os.getenv('DB_NAME')
+        ])
+        
+        if db_configured:
+            print("✓ Database configuration found")
+            print("Initializing database...")
+            if init_database():
+                print("✓ Database initialized successfully")
+            else:
+                print("⚠ Warning: Database initialization failed. Some features may not work.")
+        else:
+            print("⚠ Database not configured. Run installer to set up.")
+    else:
+        print("⚠ Configuration file (.env) not found")
+        print("  Run installer to configure: http://{}:{}/installer".format(
+            host if host != '0.0.0.0' else 'localhost', port))
+    
+    print()
+    print("Starting bWall API server...")
+    print("  Host: {} (accessible on all interfaces)".format(host))
+    print("  Port: {}".format(port))
+    print()
+    print("Access points:")
+    print("  Dashboard:  http://{}:{}/".format(
+        host if host != '0.0.0.0' else 'localhost', port))
+    print("  Installer:  http://{}:{}/installer".format(
+        host if host != '0.0.0.0' else 'localhost', port))
+    print()
+    
+    if host == '0.0.0.0':
+        print("⚠ Server is accessible from all network interfaces")
+        print("  For production, use a reverse proxy and restrict access")
+        print()
+    
     print("Note: This application requires root privileges to manage iptables")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    print("=" * 60)
+    print()
+    
+    app.run(host=host, port=port, debug=True)
 

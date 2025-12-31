@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>bWall - Installation Wizard | bunit.net</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 2rem 0;
+        }
+        .installer-container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        .installer-card {
+            background: white;
+            border-radius: 1rem;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        .installer-header {
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            color: white;
+            padding: 2rem;
+            text-align: center;
+        }
+        .installer-body {
+            padding: 2rem;
+        }
+        .step-indicator {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 2rem;
+            position: relative;
+        }
+        .step-indicator::before {
+            content: '';
+            position: absolute;
+            top: 20px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #e9ecef;
+            z-index: 0;
+        }
+        .step {
+            flex: 1;
+            text-align: center;
+            position: relative;
+            z-index: 1;
+        }
+        .step-circle {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #e9ecef;
+            color: #6c757d;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 0.5rem;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+        .step.active .step-circle {
+            background: #667eea;
+            color: white;
+        }
+        .step.completed .step-circle {
+            background: #28a745;
+            color: white;
+        }
+        .step-label {
+            font-size: 0.875rem;
+            color: #6c757d;
+        }
+        .step.active .step-label {
+            color: #667eea;
+            font-weight: 600;
+        }
+        .step.completed .step-label {
+            color: #28a745;
+        }
+        .form-section {
+            display: none;
+        }
+        .form-section.active {
+            display: block;
+            animation: fadeIn 0.3s;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .log-container {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 1rem;
+        }
+        .log-entry {
+            margin-bottom: 0.25rem;
+        }
+        .log-info { color: #4ec9b0; }
+        .log-success { color: #4ec9b0; }
+        .log-warning { color: #dcdcaa; }
+        .log-error { color: #f48771; }
+        .progress-container {
+            margin: 1.5rem 0;
+        }
+        .btn-install {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+            padding: 0.75rem 2rem;
+            font-weight: 600;
+        }
+        .btn-install:hover {
+            background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+            color: white;
+        }
+        .prereq-item {
+            display: flex;
+            align-items: center;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            border-radius: 0.5rem;
+            background: #f8f9fa;
+        }
+        .prereq-item.success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .prereq-item.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .prereq-item.warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+    </style>
+</head>
+<body>
+    <div class="installer-container">
+        <div class="installer-card">
+            <div class="installer-header">
+                <h1 class="mb-2">
+                    <i class="bi bi-shield-check me-2"></i>bWall
+                </h1>
+                <p class="mb-0">Firewall Management Dashboard Installation Wizard</p>
+                <small class="text-white-50">by bunit.net</small>
+            </div>
+            
+            <div class="installer-body">
+                <!-- Step Indicator -->
+                <div class="step-indicator">
+                    <div class="step active" id="step-1-indicator">
+                        <div class="step-circle">1</div>
+                        <div class="step-label">Prerequisites</div>
+                    </div>
+                    <div class="step" id="step-2-indicator">
+                        <div class="step-circle">2</div>
+                        <div class="step-label">Database</div>
+                    </div>
+                    <div class="step" id="step-3-indicator">
+                        <div class="step-circle">3</div>
+                        <div class="step-label">OIDC</div>
+                    </div>
+                    <div class="step" id="step-4-indicator">
+                        <div class="step-circle">4</div>
+                        <div class="step-label">Install</div>
+                    </div>
+                    <div class="step" id="step-5-indicator">
+                        <div class="step-circle">5</div>
+                        <div class="step-label">Complete</div>
+                    </div>
+                </div>
+
+                <!-- Step 1: Prerequisites -->
+                <div class="form-section active" id="step-1">
+                    <h3 class="mb-4">Step 1: Check Prerequisites</h3>
+                    <p class="text-muted mb-4">Checking system requirements...</p>
+                    
+                    <div id="prereq-results">
+                        <div class="text-center py-4">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-4 d-flex justify-content-between">
+                        <button class="btn btn-secondary" onclick="location.reload()">
+                            <i class="bi bi-arrow-clockwise me-2"></i>Refresh
+                        </button>
+                        <button class="btn btn-primary" id="btn-step-1-next" onclick="nextStep(2)" disabled>
+                            Next <i class="bi bi-arrow-right ms-2"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 2: Database Configuration -->
+                <div class="form-section" id="step-2">
+                    <h3 class="mb-4">Step 2: Database Configuration</h3>
+                    <p class="text-muted mb-4">Configure your MariaDB/MySQL database connection</p>
+                    
+                    <div id="db-status-alert" class="alert alert-info" style="display: none;">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <span id="db-status-message"></span>
+                    </div>
+                    
+                    <form id="db-form">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label">Database Host</label>
+                                <input type="text" class="form-control" id="db-host" value="localhost" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Database Root User</label>
+                                <input type="text" class="form-control" id="db-root-user" value="root" required>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Database Root Password</label>
+                            <input type="password" class="form-control" id="db-root-password" required>
+                        </div>
+                        
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label">Database Name</label>
+                                <input type="text" class="form-control" id="db-name" value="iptables_db" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Database User</label>
+                                <input type="text" class="form-control" id="db-user" value="iptables_user" required>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Database User Password</label>
+                            <input type="password" class="form-control" id="db-password" required>
+                        </div>
+                        
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="create-db">
+                            <label class="form-check-label" for="create-db">
+                                Create database and user if they don't exist
+                            </label>
+                        </div>
+                    </form>
+                    
+                    <div class="mt-4 d-flex justify-content-between">
+                        <button class="btn btn-secondary" onclick="prevStep()">
+                            <i class="bi bi-arrow-left me-2"></i>Previous
+                        </button>
+                        <button class="btn btn-primary" onclick="testDatabase()">
+                            <i class="bi bi-database me-2"></i>Test Connection
+                        </button>
+                        <button class="btn btn-primary" id="btn-step-2-next" onclick="nextStep(3)" disabled>
+                            Next <i class="bi bi-arrow-right ms-2"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 3: OIDC Configuration -->
+                <div class="form-section" id="step-3">
+                    <h3 class="mb-4">Step 3: OIDC/PocketID Configuration</h3>
+                    <p class="text-muted mb-4">Configure PocketID authentication (optional but recommended)</p>
+                    
+                    <div class="form-check mb-4">
+                        <input class="form-check-input" type="checkbox" id="enable-oidc" onchange="toggleOidcForm()">
+                        <label class="form-check-label" for="enable-oidc">
+                            Enable PocketID OIDC Authentication
+                        </label>
+                    </div>
+                    
+                    <form id="oidc-form" style="display: none;">
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle me-2"></i>
+                            You'll need your PocketID client credentials. If you haven't set up a client yet, 
+                            <a href="OIDC_SETUP.md" target="_blank" class="alert-link">see the setup guide</a>.
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">PocketID Issuer URL</label>
+                            <input type="url" class="form-control" id="oidc-issuer" placeholder="https://your-pocketid-instance.example.com">
+                        </div>
+                        
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label">Client ID</label>
+                                <input type="text" class="form-control" id="oidc-client-id">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Client Secret</label>
+                                <input type="password" class="form-control" id="oidc-client-secret">
+                            </div>
+                        </div>
+                        
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label">Redirect URI</label>
+                                <input type="url" class="form-control" id="oidc-redirect-uri" value="http://localhost:5000/oidc_callback">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Post-Logout Redirect URI</label>
+                                <input type="url" class="form-control" id="oidc-post-logout-uri" value="http://localhost:5000/">
+                            </div>
+                        </div>
+                    </form>
+                    
+                    <div class="mt-4 d-flex justify-content-between">
+                        <button class="btn btn-secondary" onclick="prevStep()">
+                            <i class="bi bi-arrow-left me-2"></i>Previous
+                        </button>
+                        <button class="btn btn-primary" onclick="nextStep(4)">
+                            Next <i class="bi bi-arrow-right ms-2"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 4: Installation -->
+                <div class="form-section" id="step-4">
+                    <h3 class="mb-4">Step 4: Installation</h3>
+                    <p class="text-muted mb-4">Installing bWall and setting up the system...</p>
+                    
+                    <div class="progress-container">
+                        <div class="progress mb-3" style="height: 30px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                 role="progressbar" id="install-progress" 
+                                 style="width: 0%">0%</div>
+                        </div>
+                        <div id="install-status" class="text-center text-muted"></div>
+                    </div>
+                    
+                    <div class="log-container" id="install-log">
+                        <div class="log-entry log-info">Ready to begin installation...</div>
+                    </div>
+                    
+                    <div class="mt-4 d-flex justify-content-between">
+                        <button class="btn btn-secondary" onclick="prevStep()" id="btn-step-4-prev" disabled>
+                            <i class="bi bi-arrow-left me-2"></i>Previous
+                        </button>
+                        <button class="btn btn-install" id="btn-install" onclick="startInstallation()">
+                            <i class="bi bi-download me-2"></i>Start Installation
+                        </button>
+                        <button class="btn btn-success" id="btn-step-4-next" onclick="nextStep(5)" style="display: none;">
+                            Next <i class="bi bi-arrow-right ms-2"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step 5: Complete -->
+                <div class="form-section" id="step-5">
+                    <div class="text-center py-5">
+                        <i class="bi bi-check-circle-fill text-success" style="font-size: 4rem;"></i>
+                        <h2 class="mt-4 mb-3">Installation Complete!</h2>
+                        <p class="text-muted mb-4">bWall has been successfully installed and configured.</p>
+                        
+                        <div class="card mt-4 text-start">
+                            <div class="card-header">
+                                <h5 class="mb-0">Next Steps</h5>
+                            </div>
+                            <div class="card-body">
+                                <ol class="mb-0">
+                                    <li class="mb-2">Start the application:
+                                        <code class="d-block mt-1">./start_bwall.sh</code>
+                                    </li>
+                                    <li class="mb-2">Access the dashboard:
+                                        <code class="d-block mt-1">http://localhost:5000</code>
+                                    </li>
+                                    <li class="mb-2">Review the configuration file:
+                                        <code class="d-block mt-1">.env</code>
+                                    </li>
+                                    <li>Check the installation log:
+                                        <code class="d-block mt-1">quickstart.log</code>
+                                    </li>
+                                </ol>
+                            </div>
+                        </div>
+                        
+                        <div class="mt-4">
+                            <a href="/" class="btn btn-primary btn-lg">
+                                <i class="bi bi-speedometer2 me-2"></i>Go to Dashboard
+                            </a>
+                            <button class="btn btn-outline-secondary btn-lg ms-2" onclick="location.reload()">
+                                <i class="bi bi-arrow-clockwise me-2"></i>Start Over
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="text-center text-white mt-4">
+            <small>bWall by <a href="https://bunit.net" target="_blank" class="text-white">bunit.net</a></small>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="installer.js"></script>
+</body>
+</html>
+

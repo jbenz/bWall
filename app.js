@@ -1,5 +1,5 @@
-// API Base URL
-const API_BASE = 'http://localhost:5000/api';
+// API Base URL - Auto-detect from current location (works with 0.0.0.0)
+const API_BASE = window.location.origin + '/api';
 
 // Configure fetch to include credentials for OIDC
 const fetchOptions = {
