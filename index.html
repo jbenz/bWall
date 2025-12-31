@@ -95,6 +95,11 @@
                             <i class="bi bi-arrow-repeat me-2"></i>Synchronization
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-tab="monitor">
+                            <i class="bi bi-shield-exclamation me-2"></i>Active Monitoring
+                        </a>
+                    </li>
                 </ul>
             </nav>
 
@@ -437,6 +442,134 @@
                         <div class="card-body">
                             <div id="sync-log" class="bg-dark text-light p-3 rounded" style="max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 0.875rem;">
                                 <div class="text-muted">No sync operations yet...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Active Monitoring Tab -->
+                <div id="monitor-tab" class="tab-content" style="display: none;">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2 class="mb-0">Active Monitoring & Auto-Blocking</h2>
+                        <div>
+                            <button class="btn btn-success me-2" id="btn-start-monitor" onclick="startMonitoring()">
+                                <i class="bi bi-play-circle me-2"></i>Start Monitoring
+                            </button>
+                            <button class="btn btn-danger" id="btn-stop-monitor" onclick="stopMonitoring()" style="display: none;">
+                                <i class="bi bi-stop-circle me-2"></i>Stop Monitoring
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Monitoring Status -->
+                    <div class="row mb-4">
+                        <div class="col-md-3">
+                            <div class="card stat-card">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <h6 class="text-white-50 mb-2">Monitoring Status</h6>
+                                            <h5 class="mb-0" id="monitor-status">Stopped</h5>
+                                        </div>
+                                        <i class="bi bi-activity fs-1 opacity-50"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card stat-card success">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <h6 class="text-white-50 mb-2">Total Events</h6>
+                                            <h3 class="mb-0" id="monitor-total-events">0</h3>
+                                        </div>
+                                        <i class="bi bi-list-ul fs-1 opacity-50"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card stat-card danger">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <h6 class="text-white-50 mb-2">Auto-Blocked IPs</h6>
+                                            <h3 class="mb-0" id="monitor-blocked-ips">0</h3>
+                                        </div>
+                                        <i class="bi bi-shield-x fs-1 opacity-50"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card stat-card warning">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <h6 class="text-white-50 mb-2">Tracked IPs</h6>
+                                            <h3 class="mb-0" id="monitor-tracked-ips">0</h3>
+                                        </div>
+                                        <i class="bi bi-eye fs-1 opacity-50"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Monitored Services -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <h5 class="mb-0">Monitored Services</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Service</th>
+                                            <th>Log Paths</th>
+                                            <th>Threshold</th>
+                                            <th>Time Window</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="monitor-services-table">
+                                        <tr>
+                                            <td colspan="5" class="text-center text-muted">Loading...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Recent Auto-Blocks -->
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">Recent Auto-Blocks</h5>
+                            <button class="btn btn-sm btn-outline-primary" onclick="loadRecentBlocks()">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Time</th>
+                                            <th>IP Address</th>
+                                            <th>Service</th>
+                                            <th>Attack Type</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="recent-blocks-table">
+                                        <tr>
+                                            <td colspan="5" class="text-center text-muted">No recent blocks</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
                     </div>

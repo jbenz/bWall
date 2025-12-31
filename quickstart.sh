@@ -253,6 +253,11 @@ print_info "Step 3: Installing Python requirements..."
 
 if [ -f "requirements.txt" ]; then
     PIP_CMD=$(command_exists pip3 && echo "pip3" || echo "pip")
+    
+    # Ensure setuptools is installed first (required for pkg_resources)
+    print_info "Installing setuptools (required dependency)..."
+    $PIP_CMD install --upgrade setuptools >/dev/null 2>&1 || true
+    
     print_info "Installing packages from requirements.txt..."
     
     if $PIP_CMD install -r requirements.txt; then

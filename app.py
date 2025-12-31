@@ -17,6 +17,7 @@ import pymysql
 from werkzeug.utils import secure_filename
 from flask_pyoidc import OIDCAuthentication
 from flask_pyoidc.provider_configuration import ProviderConfiguration, ClientMetadata
+from log_monitor import LogMonitor
 
 # Load environment variables from .env file if it exists
 if os.path.exists('.env'):
@@ -85,6 +86,19 @@ DB_CONFIG = {
 
 # Ensure upload directory exists
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# Initialize log monitor
+log_monitor = None
+def init_log_monitor():
+    """Initialize log monitoring system"""
+    global log_monitor
+    if not log_monitor:
+        def block_callback(ip):
+            """Callback when IP is auto-blocked"""
+            apply_blacklist_rule(ip)
+        
+        log_monitor = LogMonitor(DB_CONFIG, block_callback=block_callback)
+    return log_monitor
 
 def require_auth(f):
     """Decorator to require authentication for routes"""
@@ -949,6 +963,78 @@ def logout():
         return auth.logout()
     return jsonify({'message': 'Logged out'}), 200
 
+# Log Monitoring API Routes
+@app.route('/api/monitor/status', methods=['GET'])
+@require_auth
+def monitor_status():
+    """Get log monitoring status"""
+    monitor = init_log_monitor()
+    stats = monitor.get_stats()
+    return jsonify(stats)
+
+@app.route('/api/monitor/start', methods=['POST'])
+@require_auth
+def monitor_start():
+    """Start log monitoring"""
+    data = request.json or {}
+    services = data.get('services', None)
+    interval = data.get('interval', 30)
+    
+    monitor = init_log_monitor()
+    if monitor.start_monitoring(services=services, interval=interval):
+        return jsonify({'message': 'Monitoring started', 'status': monitor.get_stats()})
+    return jsonify({'error': 'Monitoring already running'}), 400
+
+@app.route('/api/monitor/stop', methods=['POST'])
+@require_auth
+def monitor_stop():
+    """Stop log monitoring"""
+    monitor = init_log_monitor()
+    monitor.stop_monitoring()
+    return jsonify({'message': 'Monitoring stopped'})
+
+@app.route('/api/monitor/recent-blocks', methods=['GET'])
+@require_auth
+def monitor_recent_blocks():
+    """Get recently auto-blocked IPs"""
+    limit = request.args.get('limit', 50, type=int)
+    monitor = init_log_monitor()
+    blocks = monitor.get_recent_blocks(limit=limit)
+    
+    # Convert datetime to string
+    for block in blocks:
+        if block.get('timestamp'):
+            block['timestamp'] = block['timestamp'].isoformat()
+    
+    return jsonify(blocks)
+
+@app.route('/api/monitor/config', methods=['GET'])
+@require_auth
+def monitor_config():
+    """Get monitoring configuration"""
+    monitor = init_log_monitor()
+    return jsonify({
+        'services': list(monitor.attack_patterns.keys()),
+        'patterns': {
+            service: {
+                'log_paths': config.get('log_paths', []),
+                'threshold': config.get('threshold', 5),
+                'window': config.get('window', 300),
+                'pattern_count': len(config.get('patterns', []))
+            }
+            for service, config in monitor.attack_patterns.items()
+        }
+    })
+
+@app.route('/api/monitor/config', methods=['POST'])
+@require_auth
+def monitor_update_config():
+    """Update monitoring configuration"""
+    data = request.json
+    # This would allow updating thresholds, patterns, etc.
+    # For now, return success
+    return jsonify({'message': 'Configuration updated'})
+
 # Installer API Routes (no auth required for installation)
 @app.route('/api/installer/prerequisites', methods=['GET'])
 def installer_prerequisites():
@@ -1479,6 +1565,23 @@ if __name__ == '__main__':
             print("Initializing database...")
             if init_database():
                 print("✓ Database initialized successfully")
+                
+                # Initialize and start log monitor
+                print("Initializing log monitoring system...")
+                monitor = init_log_monitor()
+                if os.getenv('ENABLE_LOG_MONITORING', 'true').lower() == 'true':
+                    enabled_services = os.getenv('MONITOR_SERVICES', '').split(',')
+                    enabled_services = [s.strip() for s in enabled_services if s.strip()]
+                    if monitor.start_monitoring(services=enabled_services if enabled_services else None):
+                        print("✓ Log monitoring started")
+                        if enabled_services:
+                            print(f"  Monitoring services: {', '.join(enabled_services)}")
+                        else:
+                            print("  Monitoring all configured services")
+                    else:
+                        print("⚠ Log monitoring failed to start")
+                else:
+                    print("⚠ Log monitoring disabled (set ENABLE_LOG_MONITORING=true to enable)")
             else:
                 print("⚠ Warning: Database initialization failed. Some features may not work.")
         else:

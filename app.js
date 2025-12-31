@@ -136,6 +136,11 @@ function switchTab(tabName) {
         case 'sync':
             checkDbStatus();
             break;
+        case 'monitor':
+            loadMonitorStatus();
+            loadMonitorConfig();
+            loadRecentBlocks();
+            break;
     }
 }
 
@@ -510,6 +515,153 @@ async function syncWithDatabase() {
         console.error('Error syncing:', error);
         logDiv.innerHTML = `<div class="text-danger">✗ Error: ${error.message}</div>`;
         showAlert('Error during synchronization', 'danger');
+    }
+}
+
+// Monitoring Functions
+let monitorInterval = null;
+
+async function loadMonitorStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/monitor/status`, fetchOptions);
+        if (response.ok) {
+            const stats = await response.json();
+            
+            document.getElementById('monitor-status').textContent = stats.monitoring ? 'Active' : 'Stopped';
+            document.getElementById('monitor-total-events').textContent = stats.total_events || 0;
+            document.getElementById('monitor-blocked-ips').textContent = stats.blocked_ips || 0;
+            document.getElementById('monitor-tracked-ips').textContent = stats.tracked_ips || 0;
+            
+            // Update button states
+            if (stats.monitoring) {
+                document.getElementById('btn-start-monitor').style.display = 'none';
+                document.getElementById('btn-stop-monitor').style.display = 'inline-block';
+            } else {
+                document.getElementById('btn-start-monitor').style.display = 'inline-block';
+                document.getElementById('btn-stop-monitor').style.display = 'none';
+            }
+            
+            // Update last check time
+            if (stats.last_check) {
+                const lastCheck = new Date(stats.last_check);
+                // Could display this somewhere
+            }
+        }
+    } catch (error) {
+        console.error('Error loading monitor status:', error);
+    }
+}
+
+async function loadMonitorConfig() {
+    try {
+        const response = await fetch(`${API_BASE}/monitor/config`, fetchOptions);
+        if (response.ok) {
+            const config = await response.json();
+            
+            const tbody = document.getElementById('monitor-services-table');
+            tbody.innerHTML = Object.entries(config.patterns).map(([service, info]) => `
+                <tr>
+                    <td><strong>${service.toUpperCase()}</strong></td>
+                    <td>
+                        <small>${info.log_paths.slice(0, 2).join('<br>')}</small>
+                        ${info.log_paths.length > 2 ? `<br><small class="text-muted">+${info.log_paths.length - 2} more</small>` : ''}
+                    </td>
+                    <td><span class="badge bg-warning">${info.threshold} attempts</span></td>
+                    <td><span class="badge bg-info">${info.window}s</span></td>
+                    <td><span class="badge bg-success">Active</span></td>
+                </tr>
+            `).join('');
+        }
+    } catch (error) {
+        console.error('Error loading monitor config:', error);
+    }
+}
+
+async function loadRecentBlocks() {
+    try {
+        const response = await fetch(`${API_BASE}/monitor/recent-blocks?limit=20`, fetchOptions);
+        if (response.ok) {
+            const blocks = await response.json();
+            
+            const tbody = document.getElementById('recent-blocks-table');
+            if (blocks.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No recent blocks</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = blocks.map(block => {
+                const entry = block.entry || '';
+                const match = entry.match(/(\d+\.\d+\.\d+\.\d+)/);
+                const ip = match ? match[1] : 'Unknown';
+                const serviceMatch = entry.match(/\((\w+):/);
+                const service = serviceMatch ? serviceMatch[1] : 'Unknown';
+                const attackMatch = entry.match(/:\s*(\w+)\)/);
+                const attackType = attackMatch ? attackMatch[1] : 'Unknown';
+                
+                return `
+                    <tr>
+                        <td>${new Date(block.timestamp).toLocaleString()}</td>
+                        <td><code>${ip}</code></td>
+                        <td><span class="badge bg-primary">${service}</span></td>
+                        <td><span class="badge bg-danger">${attackType}</span></td>
+                        <td><span class="badge bg-${block.status === 'success' ? 'success' : 'warning'}">${block.status}</span></td>
+                    </tr>
+                `;
+            }).join('');
+        }
+    } catch (error) {
+        console.error('Error loading recent blocks:', error);
+    }
+}
+
+async function startMonitoring() {
+    try {
+        const response = await fetch(`${API_BASE}/monitor/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            showAlert('Monitoring started successfully', 'success');
+            loadMonitorStatus();
+            
+            // Start auto-refresh
+            if (monitorInterval) clearInterval(monitorInterval);
+            monitorInterval = setInterval(loadMonitorStatus, 5000);
+        } else {
+            const result = await response.json();
+            showAlert(result.error || 'Failed to start monitoring', 'danger');
+        }
+    } catch (error) {
+        console.error('Error starting monitoring:', error);
+        showAlert('Error starting monitoring', 'danger');
+    }
+}
+
+async function stopMonitoring() {
+    try {
+        const response = await fetch(`${API_BASE}/monitor/stop`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            showAlert('Monitoring stopped', 'success');
+            loadMonitorStatus();
+            
+            // Stop auto-refresh
+            if (monitorInterval) {
+                clearInterval(monitorInterval);
+                monitorInterval = null;
+            }
+        } else {
+            showAlert('Failed to stop monitoring', 'danger');
+        }
+    } catch (error) {
+        console.error('Error stopping monitoring:', error);
+        showAlert('Error stopping monitoring', 'danger');
     }
 }
 
