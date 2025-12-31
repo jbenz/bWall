@@ -2,6 +2,7 @@ Flask==3.0.0
 flask-cors==4.0.0
 PyMySQL==1.1.0
 Werkzeug==3.0.1
-Flask-pyoidc==3.0.0
 setuptools>=65.0.0
+future>=0.18.3
+Flask-pyoidc==3.0.0
 

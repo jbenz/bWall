@@ -258,12 +258,17 @@ if [ -f "requirements.txt" ]; then
     print_info "Installing setuptools (required dependency)..."
     $PIP_CMD install --upgrade setuptools >/dev/null 2>&1 || true
     
+    # Ensure future package is compatible with Python 3.13
+    print_info "Installing/upgrading future package (Python 3.13 compatibility)..."
+    $PIP_CMD install --upgrade 'future>=0.18.3' >/dev/null 2>&1 || true
+    
     print_info "Installing packages from requirements.txt..."
     
     if $PIP_CMD install -r requirements.txt; then
         print_success "Python requirements installed"
     else
         print_error "Failed to install Python requirements"
+        print_warning "If you encounter Python 3.13 compatibility issues, see FIX_PYTHON313.md"
         exit 1
     fi
 else

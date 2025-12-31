@@ -6,6 +6,7 @@ Developed by bunit.net
 """
 
 import os
+import sys
 import subprocess
 import json
 import csv
@@ -15,8 +16,37 @@ from flask import Flask, request, jsonify, send_file, session, redirect, url_for
 from flask_cors import CORS
 import pymysql
 from werkzeug.utils import secure_filename
-from flask_pyoidc import OIDCAuthentication
-from flask_pyoidc.provider_configuration import ProviderConfiguration, ClientMetadata
+
+# Check Python version - OIDC has known issues with Python 3.13
+# The 'future' package used by flask_pyoidc has regex compatibility issues with Python 3.13
+python_version = sys.version_info
+OIDC_AVAILABLE = False
+OIDCAuthentication = None
+ProviderConfiguration = None
+ClientMetadata = None
+
+if python_version.major == 3 and python_version.minor >= 13:
+    print("=" * 60)
+    print("Warning: Python 3.13 detected")
+    print("OIDC authentication disabled due to compatibility issues.")
+    print("  The 'future' package used by flask_pyoidc is incompatible")
+    print("  with Python 3.13's stricter regex parser.")
+    print("")
+    print("Options:")
+    print("  1. Run without OIDC (current - application will work)")
+    print("  2. Use Python 3.11 or 3.12 for OIDC support")
+    print("=" * 60)
+    print()
+else:
+    # Try to import OIDC for Python < 3.13
+    try:
+        from flask_pyoidc import OIDCAuthentication
+        from flask_pyoidc.provider_configuration import ProviderConfiguration, ClientMetadata
+        OIDC_AVAILABLE = True
+    except (ImportError, Exception) as e:
+        print(f"Warning: flask_pyoidc not available: {e}")
+        print("OIDC authentication will be disabled.")
+        OIDC_AVAILABLE = False
 from log_monitor import LogMonitor
 
 # Load environment variables from .env file if it exists
@@ -50,7 +80,7 @@ CORS(app, supports_credentials=True, origins=cors_origins.split(','))
 
 # Initialize OIDC Authentication if configured
 auth = None
-if OIDC_CLIENT_ID and OIDC_CLIENT_SECRET and OIDC_ISSUER:
+if OIDC_AVAILABLE and OIDC_CLIENT_ID and OIDC_CLIENT_SECRET and OIDC_ISSUER:
     try:
         client_metadata = ClientMetadata(
             client_id=OIDC_CLIENT_ID,
@@ -68,6 +98,13 @@ if OIDC_CLIENT_ID and OIDC_CLIENT_SECRET and OIDC_ISSUER:
     except Exception as e:
         print(f"Warning: OIDC configuration failed: {e}")
         print("Application will run without authentication")
+elif not OIDC_AVAILABLE:
+    if python_version.major == 3 and python_version.minor >= 13:
+        print("Note: OIDC disabled due to Python 3.13 compatibility issues with 'future' package.")
+        print("  To use OIDC, consider using Python 3.11 or 3.12.")
+    else:
+        print("Warning: OIDC libraries not available. Install with: pip install 'future>=0.18.3' 'Flask-pyoidc==3.0.0'")
+    print("Application will run without OIDC authentication")
 else:
     print("Warning: OIDC credentials not configured. Set OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, and OIDC_ISSUER environment variables.")
 
@@ -102,10 +139,10 @@ def init_log_monitor():
 
 def require_auth(f):
     """Decorator to require authentication for routes"""
-    if auth:
+    if auth and OIDC_AVAILABLE:
         return auth.oidc_auth('default')(f)
     else:
-        # If OIDC is not configured, allow access (for development)
+        # If OIDC is not configured or not available, allow access (for development)
         return f
 
 def get_user_info():
