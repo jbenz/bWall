@@ -642,20 +642,49 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         // Debug: Check if app.js loads
-        console.log('Loading app.js...');
+        console.log('=== bWall Dashboard Loading ===');
+        console.log('Loading app.js from:', window.location.origin + '/app.js');
+        
         window.addEventListener('error', function(e) {
-            console.error('Script error:', e.filename, e.message, e.lineno);
-        });
+            console.error('Script error:', e.filename, e.message, e.lineno, e.colno);
+            if (e.filename && e.filename.includes('app.js')) {
+                console.error('ERROR: app.js failed to load or has errors!');
+            }
+        }, true);
+        
+        // Test API connectivity
+        fetch(window.location.origin + '/api/test')
+            .then(r => r.json())
+            .then(data => {
+                console.log('API test result:', data);
+                if (!data.files || !data.files['app.js']) {
+                    console.error('WARNING: app.js file not found on server!');
+                }
+            })
+            .catch(e => console.error('API test failed:', e));
     </script>
-    <script src="app.js"></script>
+    <script src="app.js" onerror="console.error('FAILED to load app.js!');"></script>
     <script>
         // Debug: Confirm app.js loaded
-        console.log('app.js should be loaded. Checking functions...');
-        if (typeof switchTab === 'function') {
-            console.log('✓ switchTab function is available');
-        } else {
-            console.error('✗ switchTab function NOT found');
-        }
+        setTimeout(function() {
+            console.log('=== Checking app.js loaded functions ===');
+            const functions = ['switchTab', 'refreshStats', 'loadWhitelist', 'loadBlacklist'];
+            functions.forEach(func => {
+                if (typeof window[func] === 'function') {
+                    console.log('✓', func, 'is available');
+                } else {
+                    console.error('✗', func, 'NOT found');
+                }
+            });
+            
+            // Test tab switching
+            const testTab = document.querySelector('[data-tab="dashboard"]');
+            if (testTab) {
+                console.log('✓ Dashboard tab link found');
+            } else {
+                console.error('✗ Dashboard tab link NOT found');
+            }
+        }, 100);
     </script>
 </body>
 </html>

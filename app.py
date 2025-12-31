@@ -58,7 +58,10 @@ if os.path.exists('.env'):
                 key, value = line.split('=', 1)
                 os.environ[key.strip()] = value.strip()
 
-app = Flask(__name__, static_folder='.', static_url_path='')
+# Get the directory where this script is located
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-this-secret-key-in-production')
 
 # OIDC Configuration
@@ -144,6 +147,7 @@ def require_auth(f):
     else:
         # If OIDC is not configured or not available, allow access (for development)
         # This allows the app to work without OIDC on Python 3.13
+        # Just return the function as-is (no authentication required)
         return f
 
 def get_user_info():
@@ -279,17 +283,38 @@ def execute_iptables_command(command):
         if not command.startswith('iptables '):
             return False, "Invalid command"
         
+        # Check if running as root or with sudo capability
+        import os
+        is_root = os.geteuid() == 0
+        
+        # Split command into parts
+        cmd_parts = command.split()
+        
+        # Try running the command
         result = subprocess.run(
-            command.split(),
+            cmd_parts,
             capture_output=True,
             text=True,
             timeout=10
         )
-        return result.returncode == 0, result.stderr if result.returncode != 0 else result.stdout
+        
+        if result.returncode == 0:
+            return True, result.stdout
+        else:
+            error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+            # Provide more helpful error messages
+            if "Permission denied" in error_msg or "Operation not permitted" in error_msg:
+                if not is_root:
+                    error_msg = "Permission denied. Application must run as root or with sudo privileges."
+                else:
+                    error_msg = f"Permission error: {error_msg}"
+            return False, error_msg
     except subprocess.TimeoutExpired:
         return False, "Command timeout"
+    except FileNotFoundError:
+        return False, "iptables command not found. Please install iptables."
     except Exception as e:
-        return False, str(e)
+        return False, f"Execution error: {str(e)}"
 
 def apply_whitelist_rule(ip_address):
     """Apply whitelist rule to iptables"""
@@ -321,14 +346,13 @@ def get_stats():
     """Get dashboard statistics"""
     conn = get_db_connection()
     if not conn:
-        # Return error if database not configured
+        # Return stats with db_connected=False if database not configured
         return jsonify({
-            'error': 'Database not configured',
             'total_rules': 0,
             'whitelist_count': 0,
             'blacklist_count': 0,
             'db_connected': False
-        }), 503
+        })
     
     try:
         with conn.cursor() as cursor:
@@ -871,25 +895,56 @@ def sync_with_database(direction='bidirectional'):
     whitelist_synced = 0
     blacklist_synced = 0
     rules_synced = 0
+    whitelist_errors = []
+    blacklist_errors = []
     
     try:
         if direction in ['bidirectional', 'db-to-iptables']:
             # Sync whitelist from DB to iptables
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT ip_address FROM whitelist")
-                for row in cursor.fetchall():
-                    ip = row[0]
-                    success, _ = apply_whitelist_rule(ip)
-                    if success:
-                        whitelist_synced += 1
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT ip_address FROM whitelist")
+                    whitelist_rows = cursor.fetchall()
+                    print(f"[SYNC] Found {len(whitelist_rows)} whitelist entries to sync")
+                    
+                    for row in whitelist_rows:
+                        ip = row[0]
+                        try:
+                            success, message = apply_whitelist_rule(ip)
+                            if success:
+                                whitelist_synced += 1
+                            else:
+                                whitelist_errors.append(f"{ip}: {message}")
+                                print(f"[SYNC] Failed to apply whitelist rule for {ip}: {message}")
+                        except Exception as e:
+                            error_msg = f"{ip}: {str(e)}"
+                            whitelist_errors.append(error_msg)
+                            print(f"[SYNC] Exception applying whitelist rule for {ip}: {e}")
                 
                 # Sync blacklist from DB to iptables
-                cursor.execute("SELECT ip_address FROM blacklist")
-                for row in cursor.fetchall():
-                    ip = row[0]
-                    success, _ = apply_blacklist_rule(ip)
-                    if success:
-                        blacklist_synced += 1
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT ip_address FROM blacklist")
+                    blacklist_rows = cursor.fetchall()
+                    print(f"[SYNC] Found {len(blacklist_rows)} blacklist entries to sync")
+                    
+                    for row in blacklist_rows:
+                        ip = row[0]
+                        try:
+                            success, message = apply_blacklist_rule(ip)
+                            if success:
+                                blacklist_synced += 1
+                            else:
+                                blacklist_errors.append(f"{ip}: {message}")
+                                print(f"[SYNC] Failed to apply blacklist rule for {ip}: {message}")
+                        except Exception as e:
+                            error_msg = f"{ip}: {str(e)}"
+                            blacklist_errors.append(error_msg)
+                            print(f"[SYNC] Exception applying blacklist rule for {ip}: {e}")
+            except Exception as e:
+                print(f"[SYNC] Error reading from database: {e}")
+                import traceback
+                traceback.print_exc()
+                return {'error': f'Database read error: {str(e)}'}
         
         if direction in ['bidirectional', 'iptables-to-db']:
             # This would require parsing iptables rules and syncing to DB
@@ -897,38 +952,114 @@ def sync_with_database(direction='bidirectional'):
             pass
         
         # Log sync operation
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO sync_log (direction, whitelist_synced, blacklist_synced, rules_synced, status, message)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (direction, whitelist_synced, blacklist_synced, rules_synced, 'success', 
-                  f'Synced {whitelist_synced} whitelist, {blacklist_synced} blacklist entries'))
-        conn.commit()
+        try:
+            status = 'success' if (len(whitelist_errors) == 0 and len(blacklist_errors) == 0) else 'partial'
+            message = f'Synced {whitelist_synced} whitelist, {blacklist_synced} blacklist entries'
+            if whitelist_errors or blacklist_errors:
+                message += f' ({len(whitelist_errors)} whitelist errors, {len(blacklist_errors)} blacklist errors)'
+            
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO sync_log (direction, whitelist_synced, blacklist_synced, rules_synced, status, message)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (direction, whitelist_synced, blacklist_synced, rules_synced, status, message))
+            conn.commit()
+        except Exception as e:
+            print(f"[SYNC] Error logging sync operation: {e}")
+            import traceback
+            traceback.print_exc()
+            # Don't fail the sync if logging fails
         
-        return {
+        result = {
             'message': 'Synchronization completed',
             'whitelist_synced': whitelist_synced,
             'blacklist_synced': blacklist_synced,
             'rules_synced': rules_synced
         }
+        
+        if whitelist_errors or blacklist_errors:
+            result['warnings'] = {
+                'whitelist_errors': whitelist_errors[:10],  # Limit to first 10 errors
+                'blacklist_errors': blacklist_errors[:10]
+            }
+        
+        return result
     except Exception as e:
-        return {'error': str(e)}
+        print(f"[SYNC] Fatal error in sync_with_database: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'error': f'Sync failed: {str(e)}'}
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 @app.route('/api/sync', methods=['POST'])
 @require_auth
 def sync():
     """Trigger synchronization"""
-    data = request.json
-    direction = data.get('direction', 'bidirectional')
-    
-    result = sync_with_database(direction)
-    
-    if 'error' in result:
-        return jsonify(result), 500
-    
-    return jsonify(result)
+    try:
+        # Ensure database is initialized
+        if not init_database():
+            return jsonify({'error': 'Database initialization failed'}), 500
+        
+        data = request.json or {}
+        direction = data.get('direction', 'bidirectional')
+        
+        # Validate direction
+        if direction not in ['bidirectional', 'db-to-iptables', 'iptables-to-db']:
+            return jsonify({'error': f'Invalid direction: {direction}'}), 400
+        
+        print(f"[SYNC] Sync request received: direction={direction}")
+        result = sync_with_database(direction)
+        
+        if 'error' in result:
+            print(f"[SYNC] Sync failed: {result['error']}")
+            return jsonify(result), 500
+        
+        print(f"[SYNC] Sync completed successfully: {result.get('message', 'OK')}")
+        return jsonify(result)
+    except Exception as e:
+        print(f"[SYNC] Exception in sync endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Sync endpoint error: {str(e)}'}), 500
+
+# Static file routes (MUST be before / route to avoid conflicts)
+@app.route('/app.js')
+def app_js():
+    """Serve main application JavaScript (no auth required)"""
+    try:
+        app_js_path = os.path.join(APP_DIR, 'app.js')
+        if os.path.exists(app_js_path):
+            return send_file(app_js_path, mimetype='application/javascript')
+        else:
+            print(f"ERROR: app.js not found at {app_js_path}")
+            print(f"Current directory: {os.getcwd()}")
+            print(f"APP_DIR: {APP_DIR}")
+            return jsonify({'error': f'Application script not found at {app_js_path}'}), 404
+    except Exception as e:
+        print(f"ERROR serving app.js: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Error serving app.js: {str(e)}'}), 500
+
+@app.route('/installer')
+def installer():
+    """Serve the web installer (no auth required, accessible on all interfaces)"""
+    try:
+        installer_path = os.path.join(APP_DIR, 'installer.html')
+        return send_file(installer_path)
+    except FileNotFoundError:
+        return jsonify({'error': 'Installer not found'}), 404
+
+@app.route('/installer.js')
+def installer_js():
+    """Serve installer JavaScript (no auth required)"""
+    try:
+        installer_js_path = os.path.join(APP_DIR, 'installer.js')
+        return send_file(installer_js_path, mimetype='application/javascript')
+    except FileNotFoundError:
+        return jsonify({'error': 'Installer script not found'}), 404
 
 @app.route('/')
 def index():
@@ -962,45 +1093,26 @@ def index():
     # Database configured, require auth and serve dashboard
     @require_auth
     def serve_dashboard():
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        index_path = os.path.join(app_dir, 'index.html')
+        index_path = os.path.join(APP_DIR, 'index.html')
+        if not os.path.exists(index_path):
+            return jsonify({'error': f'index.html not found at {index_path}'}), 404
         return send_file(index_path)
     
     return serve_dashboard()
 
-# Static file routes (must be before other routes to avoid conflicts)
-@app.route('/app.js')
-def app_js():
-    """Serve main application JavaScript (no auth required)"""
-    try:
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        app_js_path = os.path.join(app_dir, 'app.js')
-        if os.path.exists(app_js_path):
-            return send_file(app_js_path, mimetype='application/javascript')
-        else:
-            return jsonify({'error': f'Application script not found at {app_js_path}'}), 404
-    except Exception as e:
-        return jsonify({'error': f'Error serving app.js: {str(e)}'}), 500
-
-@app.route('/installer')
-def installer():
-    """Serve the web installer (no auth required, accessible on all interfaces)"""
-    try:
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        installer_path = os.path.join(app_dir, 'installer.html')
-        return send_file(installer_path)
-    except FileNotFoundError:
-        return jsonify({'error': 'Installer not found'}), 404
-
-@app.route('/installer.js')
-def installer_js():
-    """Serve installer JavaScript (no auth required)"""
-    try:
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        installer_js_path = os.path.join(app_dir, 'installer.js')
-        return send_file(installer_js_path, mimetype='application/javascript')
-    except FileNotFoundError:
-        return jsonify({'error': 'Installer script not found'}), 404
+@app.route('/api/test', methods=['GET'])
+def test_endpoint():
+    """Test endpoint to verify API is working"""
+    return jsonify({
+        'status': 'ok',
+        'message': 'API is working',
+        'app_dir': APP_DIR,
+        'files': {
+            'app.js': os.path.exists(os.path.join(APP_DIR, 'app.js')),
+            'index.html': os.path.exists(os.path.join(APP_DIR, 'index.html')),
+            'app.py': os.path.exists(os.path.join(APP_DIR, 'app.py'))
+        }
+    })
 
 @app.route('/api/auth/user', methods=['GET'])
 def get_user():
@@ -1671,11 +1783,25 @@ if __name__ == '__main__':
     print("Starting bWall API server...")
     print("  Host: {} (accessible on all interfaces)".format(host))
     print("  Port: {}".format(port))
+    print("  APP_DIR: {}".format(APP_DIR))
+    print()
+    
+    # Verify critical files exist
+    critical_files = ['app.js', 'index.html', 'app.py']
+    for filename in critical_files:
+        filepath = os.path.join(APP_DIR, filename)
+        if os.path.exists(filepath):
+            print("  ✓ {} found".format(filename))
+        else:
+            print("  ✗ {} NOT FOUND at {}".format(filename, filepath))
+    
     print()
     print("Access points:")
     print("  Dashboard:  http://{}:{}/".format(
         host if host != '0.0.0.0' else 'localhost', port))
     print("  Installer:  http://{}:{}/installer".format(
+        host if host != '0.0.0.0' else 'localhost', port))
+    print("  app.js:     http://{}:{}/app.js".format(
         host if host != '0.0.0.0' else 'localhost', port))
     print()
     

@@ -12,37 +12,67 @@ let currentUser = null;
 
 // Tab Navigation
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('=== bWall Dashboard Initialization ===');
     console.log('DOM loaded, initializing...');
+    console.log('API Base URL:', API_BASE);
     
     // Initialize tabs immediately (don't wait for auth)
     const navLinks = document.querySelectorAll('.sidebar .nav-link');
     console.log('Found nav links:', navLinks.length);
     
-    navLinks.forEach(link => {
+    if (navLinks.length === 0) {
+        console.error('ERROR: No nav links found! Check HTML structure.');
+    }
+    
+    navLinks.forEach((link, index) => {
+        const tabName = link.getAttribute('data-tab');
+        console.log(`Setting up nav link ${index + 1}: ${tabName}`);
         link.addEventListener('click', function(e) {
             e.preventDefault();
             const tab = this.getAttribute('data-tab');
             console.log('Nav link clicked, switching to tab:', tab);
-            switchTab(tab);
+            if (typeof switchTab === 'function') {
+                switchTab(tab);
+            } else {
+                console.error('ERROR: switchTab function not defined!');
+            }
         });
     });
 
     // Load initial data
     console.log('Switching to dashboard tab...');
-    switchTab('dashboard');
+    if (typeof switchTab === 'function') {
+        switchTab('dashboard');
+    } else {
+        console.error('ERROR: switchTab function not available on page load!');
+    }
     
     // Check authentication in background (non-blocking)
     checkAuthentication().then(() => {
         console.log('Authentication check completed');
-        refreshStats();
+        if (typeof refreshStats === 'function') {
+            refreshStats();
+        } else {
+            console.error('ERROR: refreshStats function not defined!');
+        }
     }).catch(error => {
         console.error('Authentication check failed:', error);
         // Continue anyway - load stats
         console.log('Loading stats despite auth error...');
-        refreshStats();
+        if (typeof refreshStats === 'function') {
+            refreshStats();
+        } else {
+            console.error('ERROR: refreshStats function not defined!');
+        }
     });
     
     console.log('Initialization complete');
+    console.log('Available functions:', {
+        switchTab: typeof switchTab,
+        refreshStats: typeof refreshStats,
+        loadWhitelist: typeof loadWhitelist,
+        loadBlacklist: typeof loadBlacklist
+    });
 });
 
 // Authentication Functions
@@ -207,29 +237,36 @@ function switchTab(tabName) {
 // Dashboard Functions
 async function refreshStats() {
     try {
+        console.log('Fetching stats from:', `${API_BASE}/stats`);
         const response = await fetch(`${API_BASE}/stats`, fetchOptions);
         
+        console.log('Stats response status:', response.status);
+        
         if (response.status === 401 || response.status === 403) {
+            console.warn('Stats endpoint returned 401/403 - checking auth status');
             // Check if OIDC is available
             try {
                 const authCheck = await fetch(`${API_BASE}/auth/user`, fetchOptions);
                 const authData = await authCheck.json();
+                console.log('Auth check result:', authData);
                 if (authData.oidc_available === false) {
                     // OIDC not available, but we should still be able to access
-                    // This might be a different issue
-                    console.warn('Stats endpoint returned 401/403 but OIDC not available');
+                    console.warn('Stats endpoint returned 401/403 but OIDC not available - this is unexpected');
                 }
             } catch (e) {
-                // Ignore
+                console.error('Error checking auth:', e);
             }
             return;
         }
         
         if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+            const errorText = await response.text();
+            console.error('Stats endpoint error:', response.status, errorText);
+            throw new Error(`HTTP ${response.status}: ${errorText}`);
         }
         
         const data = await response.json();
+        console.log('Stats data received:', data);
         
         if (document.getElementById('stat-total-rules')) {
             document.getElementById('stat-total-rules').textContent = data.total_rules || 0;
@@ -247,6 +284,7 @@ async function refreshStats() {
         loadActivityLog();
     } catch (error) {
         console.error('Error refreshing stats:', error);
+        console.error('Error details:', error.message, error.stack);
         // Show error in console but don't block the UI
         if (error.message && !error.message.includes('401') && !error.message.includes('403')) {
             console.warn('Could not load statistics:', error.message);
@@ -580,19 +618,33 @@ async function syncWithDatabase() {
         const result = await response.json();
         
         if (response.ok) {
-            logDiv.innerHTML = `
+            let html = `
                 <div class="text-success">✓ Synchronization completed successfully</div>
                 <div class="text-muted">${result.message || ''}</div>
                 <div class="text-muted mt-2">Whitelist: ${result.whitelist_synced || 0} entries</div>
                 <div class="text-muted">Blacklist: ${result.blacklist_synced || 0} entries</div>
                 <div class="text-muted">Rules: ${result.rules_synced || 0} entries</div>
             `;
+            
+            // Show warnings if any
+            if (result.warnings) {
+                if (result.warnings.whitelist_errors && result.warnings.whitelist_errors.length > 0) {
+                    html += `<div class="text-warning mt-2">⚠ Whitelist errors: ${result.warnings.whitelist_errors.length}</div>`;
+                }
+                if (result.warnings.blacklist_errors && result.warnings.blacklist_errors.length > 0) {
+                    html += `<div class="text-warning">⚠ Blacklist errors: ${result.warnings.blacklist_errors.length}</div>`;
+                }
+            }
+            
+            logDiv.innerHTML = html;
             showAlert('Synchronization completed successfully', 'success');
             checkDbStatus();
             refreshStats();
         } else {
-            logDiv.innerHTML = `<div class="text-danger">✗ Error: ${result.error || 'Synchronization failed'}</div>`;
-            showAlert('Synchronization failed', 'danger');
+            const errorMsg = result.error || result.message || 'Synchronization failed';
+            console.error('Sync error:', errorMsg, result);
+            logDiv.innerHTML = `<div class="text-danger">✗ Error: ${errorMsg}</div>`;
+            showAlert(`Synchronization failed: ${errorMsg}`, 'danger');
         }
     } catch (error) {
         console.error('Error syncing:', error);
