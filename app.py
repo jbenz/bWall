@@ -16,6 +16,10 @@ from flask import Flask, request, jsonify, send_file, session, redirect, url_for
 from flask_cors import CORS
 import pymysql
 from werkzeug.utils import secure_filename
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Check Python version - OIDC has known issues with Python 3.13
 # The 'future' package used by flask_pyoidc has regex compatibility issues with Python 3.13
@@ -48,6 +52,7 @@ else:
         print("OIDC authentication will be disabled.")
         OIDC_AVAILABLE = False
 from log_monitor import LogMonitor
+from abuseipdb import AbuseIPDB
 
 # Load environment variables from .env file if it exists
 if os.path.exists('.env'):
@@ -127,15 +132,58 @@ DB_CONFIG = {
 # Ensure upload directory exists
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# Initialize AbuseIPDB client
+abuseipdb = AbuseIPDB()
+
+# AbuseIPDB reporting mode: 'log_only', 'log_and_hold', 'automatic'
+ABUSEIPDB_MODE = os.getenv('ABUSEIPDB_MODE', 'automatic').lower()
+if ABUSEIPDB_MODE not in ['log_only', 'log_and_hold', 'automatic']:
+    ABUSEIPDB_MODE = 'automatic'
+    print(f"[AbuseIPDB] Invalid mode, defaulting to 'automatic'")
+
 # Initialize log monitor
 log_monitor = None
 def init_log_monitor():
     """Initialize log monitoring system"""
     global log_monitor
     if not log_monitor:
-        def block_callback(ip):
+        def block_callback(ip, service=None, attack_type=None):
             """Callback when IP is auto-blocked"""
             apply_blacklist_rule(ip)
+            
+            # Handle AbuseIPDB reporting based on mode
+            if abuseipdb.enabled:
+                try:
+                    categories = abuseipdb.map_attack_type_to_categories(
+                        attack_type or 'other',
+                        service or ''
+                    )
+                    comment = f"Auto-blocked by bWall: {service or 'unknown'} {attack_type or 'attack'}"
+                    
+                    if ABUSEIPDB_MODE == 'automatic':
+                        # Report immediately
+                        result = abuseipdb.report_ip(ip, categories, comment)
+                        if 'error' not in result:
+                            print(f"[AbuseIPDB] Reported IP {ip} successfully (automatic)")
+                            log_activity('report_abuseipdb', 'abuseipdb', ip, 'success')
+                        else:
+                            print(f"[AbuseIPDB] Failed to report IP {ip}: {result.get('error', 'Unknown error')}")
+                            log_activity('report_abuseipdb', 'abuseipdb', ip, 'error')
+                    
+                    elif ABUSEIPDB_MODE == 'log_and_hold':
+                        # Queue for review
+                        queue_abuseipdb_report(ip, categories, comment, service, attack_type, 'auto')
+                        print(f"[AbuseIPDB] Queued IP {ip} for review (log_and_hold mode)")
+                        log_activity('queue_abuseipdb', 'abuseipdb', ip, 'pending')
+                    
+                    elif ABUSEIPDB_MODE == 'log_only':
+                        # Just log, don't report or queue
+                        print(f"[AbuseIPDB] Logged IP {ip} (log_only mode - not reporting)")
+                        log_activity('log_abuseipdb', 'abuseipdb', ip, 'logged')
+                
+                except Exception as e:
+                    print(f"[AbuseIPDB] Error processing IP {ip}: {e}")
+                    log_activity('error_abuseipdb', 'abuseipdb', ip, 'error')
         
         log_monitor = LogMonitor(DB_CONFIG, block_callback=block_callback)
     return log_monitor
@@ -257,6 +305,26 @@ def init_database():
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
             
+            # AbuseIPDB report queue table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS abuseipdb_queue (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    ip_address VARCHAR(45) NOT NULL,
+                    categories JSON NOT NULL,
+                    comment TEXT,
+                    service VARCHAR(50),
+                    attack_type VARCHAR(50),
+                    source VARCHAR(20) DEFAULT 'auto',
+                    status VARCHAR(20) DEFAULT 'pending',
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    submitted_at TIMESTAMP NULL,
+                    INDEX idx_status (status),
+                    INDEX idx_ip (ip_address),
+                    INDEX idx_created (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+            
         conn.commit()
         return True
     except Exception as e:
@@ -288,6 +356,27 @@ def log_activity(action, type, entry, status='success'):
         conn.commit()
     except Exception as e:
         print(f"Error logging activity: {e}")
+    finally:
+        conn.close()
+
+def queue_abuseipdb_report(ip_address, categories, comment, service=None, attack_type=None, source='manual'):
+    """Queue an AbuseIPDB report for review"""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    try:
+        import json
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO abuseipdb_queue (ip_address, categories, comment, service, attack_type, source, status)
+                VALUES (%s, %s, %s, %s, %s, %s, 'pending')
+            """, (ip_address, json.dumps(categories), comment, service, attack_type, source))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error queueing AbuseIPDB report: {e}")
+        return False
     finally:
         conn.close()
 
@@ -331,27 +420,129 @@ def execute_iptables_command(command):
     except Exception as e:
         return False, f"Execution error: {str(e)}"
 
+# bWall iptables chain names
+BWALL_WHITELIST_CHAIN = "BWALL_WHITELIST"
+BWALL_BLACKLIST_CHAIN = "BWALL_BLACKLIST"
+BWALL_RULES_CHAIN = "BWALL_RULES"
+
+def init_iptables_chains():
+    """Initialize bWall iptables chains and set up INPUT chain routing"""
+    chains_initialized = False
+    
+    try:
+        # Create chains if they don't exist
+        for chain in [BWALL_WHITELIST_CHAIN, BWALL_BLACKLIST_CHAIN, BWALL_RULES_CHAIN]:
+            # Check if chain exists
+            result = subprocess.run(
+                ['iptables', '-L', chain, '-n'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode != 0:
+                # Chain doesn't exist, create it
+                create_result = execute_iptables_command(f"iptables -N {chain}")
+                if create_result[0]:
+                    print(f"[IPTABLES] Created chain: {chain}")
+                else:
+                    print(f"[ERROR] Failed to create chain {chain}: {create_result[1]}")
+                    return False
+            else:
+                print(f"[IPTABLES] Chain {chain} already exists")
+        
+        # Set up INPUT chain to route to bWall chains in correct order
+        # Order: BWALL_WHITELIST -> BWALL_BLACKLIST -> BWALL_RULES
+        
+        # Check if jump rules already exist in INPUT chain
+        result = subprocess.run(
+            ['iptables', '-L', 'INPUT', '-n', '--line-numbers'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        input_rules = result.stdout if result.returncode == 0 else ""
+        
+        # Insert jump rules if they don't exist
+        position = 1
+        
+        if BWALL_WHITELIST_CHAIN not in input_rules:
+            cmd = f"iptables -I INPUT {position} -j {BWALL_WHITELIST_CHAIN}"
+            result = execute_iptables_command(cmd)
+            if result[0]:
+                print(f"[IPTABLES] Added jump to {BWALL_WHITELIST_CHAIN} in INPUT chain")
+                position += 1
+            else:
+                print(f"[WARNING] Could not add jump to {BWALL_WHITELIST_CHAIN}: {result[1]}")
+        else:
+            print(f"[IPTABLES] Jump to {BWALL_WHITELIST_CHAIN} already exists")
+            position += 1
+        
+        if BWALL_BLACKLIST_CHAIN not in input_rules:
+            cmd = f"iptables -I INPUT {position} -j {BWALL_BLACKLIST_CHAIN}"
+            result = execute_iptables_command(cmd)
+            if result[0]:
+                print(f"[IPTABLES] Added jump to {BWALL_BLACKLIST_CHAIN} in INPUT chain")
+                position += 1
+            else:
+                print(f"[WARNING] Could not add jump to {BWALL_BLACKLIST_CHAIN}: {result[1]}")
+        else:
+            print(f"[IPTABLES] Jump to {BWALL_BLACKLIST_CHAIN} already exists")
+            position += 1
+        
+        if BWALL_RULES_CHAIN not in input_rules:
+            cmd = f"iptables -I INPUT {position} -j {BWALL_RULES_CHAIN}"
+            result = execute_iptables_command(cmd)
+            if result[0]:
+                print(f"[IPTABLES] Added jump to {BWALL_RULES_CHAIN} in INPUT chain")
+            else:
+                print(f"[WARNING] Could not add jump to {BWALL_RULES_CHAIN}: {result[1]}")
+        else:
+            print(f"[IPTABLES] Jump to {BWALL_RULES_CHAIN} already exists")
+        
+        chains_initialized = True
+        print("[IPTABLES] bWall chains initialized successfully")
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize iptables chains: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    
+    return chains_initialized
+
 def apply_whitelist_rule(ip_address):
-    """Apply whitelist rule to iptables"""
-    # Allow traffic from whitelisted IP
-    command = f"iptables -I INPUT -s {ip_address} -j ACCEPT"
+    """Apply whitelist rule to BWALL_WHITELIST chain"""
+    command = f"iptables -I {BWALL_WHITELIST_CHAIN} -s {ip_address} -j ACCEPT"
     return execute_iptables_command(command)
 
 def apply_blacklist_rule(ip_address):
-    """Apply blacklist rule to iptables"""
-    # Block traffic from blacklisted IP
-    command = f"iptables -I INPUT -s {ip_address} -j DROP"
+    """Apply blacklist rule to BWALL_BLACKLIST chain"""
+    command = f"iptables -I {BWALL_BLACKLIST_CHAIN} -s {ip_address} -j DROP"
     return execute_iptables_command(command)
 
 def remove_whitelist_rule(ip_address):
-    """Remove whitelist rule from iptables"""
-    command = f"iptables -D INPUT -s {ip_address} -j ACCEPT"
-    return execute_iptables_command(command)
+    """Remove whitelist rule from BWALL_WHITELIST chain"""
+    command = f"iptables -D {BWALL_WHITELIST_CHAIN} -s {ip_address} -j ACCEPT"
+    result = execute_iptables_command(command)
+    
+    # If rule doesn't exist, that's okay
+    if not result[0] and "No chain/target/match" not in result[1] and "Bad rule" not in result[1]:
+        print(f"[WARNING] Could not remove whitelist rule for {ip_address}: {result[1]}")
+    
+    return result
 
 def remove_blacklist_rule(ip_address):
-    """Remove blacklist rule from iptables"""
-    command = f"iptables -D INPUT -s {ip_address} -j DROP"
-    return execute_iptables_command(command)
+    """Remove blacklist rule from BWALL_BLACKLIST chain"""
+    command = f"iptables -D {BWALL_BLACKLIST_CHAIN} -s {ip_address} -j DROP"
+    result = execute_iptables_command(command)
+    
+    # If rule doesn't exist, that's okay
+    if not result[0] and "No chain/target/match" not in result[1] and "Bad rule" not in result[1]:
+        print(f"[WARNING] Could not remove blacklist rule for {ip_address}: {result[1]}")
+    
+    return result
 
 # API Routes
 
@@ -573,7 +764,41 @@ def add_blacklist():
         else:
             log_activity('add_blacklist', 'blacklist', ip_address, 'success')
         
-        return jsonify({'message': 'Blacklist entry added successfully'})
+        # Handle AbuseIPDB reporting based on mode
+        abuseipdb_handled = False
+        if abuseipdb.enabled and data.get('report_to_abuseipdb', False):
+            categories = data.get('abuseipdb_categories', ['other'])
+            comment = description or f"Manually blocked via bWall: {ip_address}"
+            
+            if ABUSEIPDB_MODE == 'automatic':
+                # Report immediately
+                try:
+                    result = abuseipdb.report_ip(ip_address, categories, comment)
+                    if 'error' not in result:
+                        abuseipdb_handled = True
+                        log_activity('report_abuseipdb', 'blacklist', ip_address, 'success')
+                except Exception as e:
+                    print(f"[AbuseIPDB] Error reporting IP {ip_address}: {e}")
+            
+            elif ABUSEIPDB_MODE == 'log_and_hold':
+                # Queue for review
+                if queue_abuseipdb_report(ip_address, categories, comment, None, None, 'manual'):
+                    abuseipdb_handled = True
+                    log_activity('queue_abuseipdb', 'blacklist', ip_address, 'pending')
+            
+            elif ABUSEIPDB_MODE == 'log_only':
+                # Just log
+                log_activity('log_abuseipdb', 'blacklist', ip_address, 'logged')
+                abuseipdb_handled = True
+        
+        response = {'message': 'Blacklist entry added successfully'}
+        if abuseipdb_handled:
+            if ABUSEIPDB_MODE == 'automatic':
+                response['abuseipdb_reported'] = True
+            elif ABUSEIPDB_MODE == 'log_and_hold':
+                response['abuseipdb_queued'] = True
+        
+        return jsonify(response)
     except pymysql.IntegrityError:
         return jsonify({'error': 'IP address already exists in blacklist'}), 400
     except Exception as e:
@@ -590,6 +815,7 @@ def delete_blacklist(entry_id):
         return jsonify({'error': 'Database connection failed'}), 500
     
     try:
+        ip_address = None
         with conn.cursor() as cursor:
             # Get IP address before deleting
             cursor.execute("SELECT ip_address FROM blacklist WHERE id = %s", (entry_id,))
@@ -601,17 +827,31 @@ def delete_blacklist(entry_id):
             
             # Delete from database
             cursor.execute("DELETE FROM blacklist WHERE id = %s", (entry_id,))
+            deleted_count = cursor.rowcount
+        
+        if deleted_count == 0:
+            return jsonify({'error': 'Entry not found or already deleted'}), 404
+        
         conn.commit()
         
-        # Remove iptables rule
-        remove_blacklist_rule(ip_address)
-        log_activity('delete_blacklist', 'blacklist', ip_address, 'success')
+        # Remove iptables rule (don't fail if rule doesn't exist)
+        if ip_address:
+            success, message = remove_blacklist_rule(ip_address)
+            if not success:
+                # Log warning but don't fail the delete operation
+                print(f"[WARNING] Could not remove iptables rule for {ip_address}: {message}")
+        
+        log_activity('delete_blacklist', 'blacklist', ip_address or str(entry_id), 'success')
         
         return jsonify({'message': 'Blacklist entry deleted successfully'})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"[ERROR] Exception in delete_blacklist: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Error deleting blacklist entry: {str(e)}'}), 500
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 @app.route('/api/rules', methods=['GET'])
 @require_auth
@@ -915,7 +1155,10 @@ def sync_with_database(direction='bidirectional'):
     
     try:
         if direction in ['bidirectional', 'db-to-iptables']:
-            # Sync whitelist from DB to iptables
+            # With separate chains, order is guaranteed by INPUT chain routing:
+            # INPUT -> BWALL_WHITELIST -> BWALL_BLACKLIST -> BWALL_RULES
+            
+            # Step 1: Sync whitelist from DB to BWALL_WHITELIST chain
             try:
                 with conn.cursor() as cursor:
                     cursor.execute("SELECT ip_address FROM whitelist")
@@ -936,7 +1179,7 @@ def sync_with_database(direction='bidirectional'):
                             whitelist_errors.append(error_msg)
                             print(f"[SYNC] Exception applying whitelist rule for {ip}: {e}")
                 
-                # Sync blacklist from DB to iptables
+                # Step 2: Sync blacklist from DB to BWALL_BLACKLIST chain
                 with conn.cursor() as cursor:
                     cursor.execute("SELECT ip_address FROM blacklist")
                     blacklist_rows = cursor.fetchall()
@@ -1277,6 +1520,228 @@ def monitor_recent_blocks():
             block['timestamp'] = block['timestamp'].isoformat()
     
     return jsonify(blocks)
+
+@app.route('/api/abuseipdb/check', methods=['GET'])
+@require_auth
+def abuseipdb_check():
+    """Check an IP address against AbuseIPDB"""
+    ip_address = request.args.get('ip')
+    if not ip_address:
+        return jsonify({'error': 'IP address is required'}), 400
+    
+    max_age = request.args.get('maxAgeInDays', 90, type=int)
+    verbose = request.args.get('verbose', 'false').lower() == 'true'
+    
+    result = abuseipdb.check_ip(ip_address, max_age, verbose)
+    
+    if 'error' in result:
+        return jsonify(result), 500
+    
+    return jsonify(result)
+
+@app.route('/api/abuseipdb/report', methods=['POST'])
+@require_auth
+def abuseipdb_report():
+    """Report an IP address to AbuseIPDB"""
+    data = request.json
+    ip_address = data.get('ip')
+    categories = data.get('categories', [])
+    comment = data.get('comment', '')
+    
+    if not ip_address:
+        return jsonify({'error': 'IP address is required'}), 400
+    
+    if not categories:
+        return jsonify({'error': 'At least one category is required'}), 400
+    
+    result = abuseipdb.report_ip(ip_address, categories, comment)
+    
+    if 'error' in result:
+        return jsonify(result), 500
+    
+    # Log the report
+    log_activity('report_abuseipdb', 'abuseipdb', ip_address, 'success')
+    
+    return jsonify(result)
+
+@app.route('/api/abuseipdb/status', methods=['GET'])
+@require_auth
+def abuseipdb_status():
+    """Get AbuseIPDB integration status"""
+    # Get queue count
+    queue_count = 0
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) FROM abuseipdb_queue WHERE status = 'pending'")
+                result = cursor.fetchone()
+                queue_count = result[0] if result else 0
+        except:
+            pass
+        finally:
+            conn.close()
+    
+    return jsonify({
+        'enabled': abuseipdb.enabled,
+        'api_key_configured': bool(abuseipdb.api_key),
+        'mode': ABUSEIPDB_MODE,
+        'queue_count': queue_count,
+        'categories': abuseipdb.CATEGORIES
+    })
+
+@app.route('/api/abuseipdb/queue', methods=['GET'])
+@require_auth
+def abuseipdb_queue_list():
+    """Get queued AbuseIPDB reports"""
+    status_filter = request.args.get('status', 'pending')
+    limit = request.args.get('limit', 100, type=int)
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify([])
+    
+    try:
+        import json
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            query = "SELECT * FROM abuseipdb_queue WHERE status = %s ORDER BY created_at DESC LIMIT %s"
+            cursor.execute(query, (status_filter, limit))
+            entries = cursor.fetchall()
+            
+            for entry in entries:
+                if entry.get('categories'):
+                    entry['categories'] = json.loads(entry['categories'])
+                if entry.get('created_at'):
+                    entry['created_at'] = entry['created_at'].isoformat()
+                if entry.get('submitted_at'):
+                    entry['submitted_at'] = entry['submitted_at'].isoformat()
+        
+        return jsonify(entries)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/abuseipdb/queue/submit', methods=['POST'])
+@require_auth
+def abuseipdb_queue_submit():
+    """Submit queued AbuseIPDB reports"""
+    data = request.json
+    report_ids = data.get('ids', [])
+    
+    if not report_ids:
+        return jsonify({'error': 'No report IDs provided'}), 400
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    import json
+    from datetime import datetime
+    
+    submitted = 0
+    failed = 0
+    errors = []
+    
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # Get queued reports
+            placeholders = ','.join(['%s'] * len(report_ids))
+            cursor.execute(f"""
+                SELECT * FROM abuseipdb_queue 
+                WHERE id IN ({placeholders}) AND status = 'pending'
+            """, report_ids)
+            reports = cursor.fetchall()
+            
+            for report in reports:
+                try:
+                    categories = json.loads(report['categories']) if isinstance(report['categories'], str) else report['categories']
+                    result = abuseipdb.report_ip(report['ip_address'], categories, report['comment'] or '')
+                    
+                    if 'error' not in result:
+                        # Mark as submitted
+                        cursor.execute("""
+                            UPDATE abuseipdb_queue 
+                            SET status = 'submitted', submitted_at = NOW()
+                            WHERE id = %s
+                        """, (report['id'],))
+                        submitted += 1
+                        log_activity('submit_abuseipdb', 'abuseipdb', report['ip_address'], 'success')
+                    else:
+                        # Mark as failed
+                        cursor.execute("""
+                            UPDATE abuseipdb_queue 
+                            SET status = 'failed', error_message = %s
+                            WHERE id = %s
+                        """, (result.get('error', 'Unknown error'), report['id']))
+                        failed += 1
+                        errors.append(f"IP {report['ip_address']}: {result.get('error', 'Unknown error')}")
+                        log_activity('submit_abuseipdb', 'abuseipdb', report['ip_address'], 'error')
+                
+                except Exception as e:
+                    cursor.execute("""
+                        UPDATE abuseipdb_queue 
+                        SET status = 'failed', error_message = %s
+                        WHERE id = %s
+                    """, (str(e), report['id']))
+                    failed += 1
+                    errors.append(f"IP {report['ip_address']}: {str(e)}")
+        
+        conn.commit()
+        
+        return jsonify({
+            'message': f'Submitted {submitted} reports, {failed} failed',
+            'submitted': submitted,
+            'failed': failed,
+            'errors': errors if errors else None
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/abuseipdb/queue/delete', methods=['POST'])
+@require_auth
+def abuseipdb_queue_delete():
+    """Delete queued AbuseIPDB reports"""
+    data = request.json
+    report_ids = data.get('ids', [])
+    
+    if not report_ids:
+        return jsonify({'error': 'No report IDs provided'}), 400
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        with conn.cursor() as cursor:
+            placeholders = ','.join(['%s'] * len(report_ids))
+            cursor.execute(f"DELETE FROM abuseipdb_queue WHERE id IN ({placeholders})", report_ids)
+        conn.commit()
+        
+        return jsonify({'message': f'Deleted {len(report_ids)} reports'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/abuseipdb/blacklist', methods=['GET'])
+@require_auth
+def abuseipdb_blacklist():
+    """Get AbuseIPDB blacklist"""
+    confidence_minimum = request.args.get('confidenceMinimum', 100, type=int)
+    limit = request.args.get('limit', 10000, type=int)
+    country_code = request.args.get('countryCode')
+    ip_version = request.args.get('ipVersion', type=int)
+    
+    result = abuseipdb.get_blacklist(confidence_minimum, limit, country_code, ip_version)
+    
+    if 'error' in result:
+        return jsonify(result), 500
+    
+    return jsonify(result)
 
 @app.route('/api/monitor/config', methods=['GET'])
 @require_auth
@@ -1835,25 +2300,36 @@ if __name__ == '__main__':
             print("Initializing database...")
             if init_database():
                 print("✓ Database initialized successfully")
-                
-                # Initialize and start log monitor
-                print("Initializing log monitoring system...")
-                monitor = init_log_monitor()
-                if os.getenv('ENABLE_LOG_MONITORING', 'true').lower() == 'true':
-                    enabled_services = os.getenv('MONITOR_SERVICES', '').split(',')
-                    enabled_services = [s.strip() for s in enabled_services if s.strip()]
-                    if monitor.start_monitoring(services=enabled_services if enabled_services else None):
-                        print("✓ Log monitoring started")
-                        if enabled_services:
-                            print(f"  Monitoring services: {', '.join(enabled_services)}")
-                        else:
-                            print("  Monitoring all configured services")
-                    else:
-                        print("⚠ Log monitoring failed to start")
-                else:
-                    print("⚠ Log monitoring disabled (set ENABLE_LOG_MONITORING=true to enable)")
             else:
                 print("⚠ Warning: Database initialization failed. Some features may not work.")
+        
+        # Initialize iptables chains (required for rule management)
+        print("Initializing iptables chains...")
+        if init_iptables_chains():
+            print("✓ iptables chains initialized successfully")
+            print("  Chain order: BWALL_WHITELIST → BWALL_BLACKLIST → BWALL_RULES")
+        else:
+            print("⚠ Warning: iptables chain initialization failed")
+            print("  Make sure you are running as root/sudo")
+            print("  Rules may not work correctly until chains are initialized")
+        
+        if db_configured:
+            # Initialize and start log monitor
+            print("Initializing log monitoring system...")
+            monitor = init_log_monitor()
+            if os.getenv('ENABLE_LOG_MONITORING', 'true').lower() == 'true':
+                enabled_services = os.getenv('MONITOR_SERVICES', '').split(',')
+                enabled_services = [s.strip() for s in enabled_services if s.strip()]
+                if monitor.start_monitoring(services=enabled_services if enabled_services else None):
+                    print("✓ Log monitoring started")
+                    if enabled_services:
+                        print(f"  Monitoring services: {', '.join(enabled_services)}")
+                    else:
+                        print("  Monitoring all configured services")
+                else:
+                    print("⚠ Log monitoring failed to start")
+            else:
+                print("⚠ Log monitoring disabled (set ENABLE_LOG_MONITORING=true to enable)")
         else:
             print("⚠ Database not configured. Run installer to set up.")
     else:

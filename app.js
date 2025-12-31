@@ -10,6 +10,158 @@ const fetchOptions = {
 let isAuthenticated = false;
 let currentUser = null;
 
+// Show/hide AbuseIPDB categories when checkbox is toggled
+document.addEventListener('DOMContentLoaded', function() {
+    const reportCheckbox = document.getElementById('report-to-abuseipdb');
+    const categoriesDiv = document.getElementById('abuseipdb-categories');
+    
+    if (reportCheckbox && categoriesDiv) {
+        reportCheckbox.addEventListener('change', function() {
+            categoriesDiv.style.display = this.checked ? 'block' : 'none';
+        });
+    }
+});
+
+// AbuseIPDB Queue Functions
+async function loadAbuseIPDBStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/abuseipdb/status`, fetchOptions);
+        if (response.ok) {
+            const status = await response.json();
+            const queueCard = document.getElementById('abuseipdb-queue-card');
+            
+            // Show queue card only if mode is log_and_hold
+            if (queueCard && status.mode === 'log_and_hold' && status.enabled) {
+                queueCard.style.display = 'block';
+                document.getElementById('queue-count').textContent = `${status.queue_count || 0} pending`;
+                if (status.queue_count > 0) {
+                    loadAbuseIPDBQueue();
+                }
+            } else if (queueCard) {
+                queueCard.style.display = 'none';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading AbuseIPDB status:', error);
+    }
+}
+
+async function loadAbuseIPDBQueue() {
+    try {
+        const response = await fetch(`${API_BASE}/abuseipdb/queue?status=pending`, fetchOptions);
+        if (response.ok) {
+            const reports = await response.json();
+            const tbody = document.getElementById('abuseipdb-queue-table');
+            
+            if (reports.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No pending reports</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = reports.map(report => {
+                let categories = 'N/A';
+                if (Array.isArray(report.categories)) {
+                    categories = report.categories.join(', ');
+                } else if (typeof report.categories === 'string') {
+                    try {
+                        const parsed = JSON.parse(report.categories);
+                        categories = Array.isArray(parsed) ? parsed.join(', ') : parsed;
+                    } catch {
+                        categories = report.categories;
+                    }
+                }
+                
+                return `
+                    <tr>
+                        <td><input type="checkbox" class="queue-checkbox" value="${report.id}"></td>
+                        <td><code>${report.ip_address}</code></td>
+                        <td><small>${categories}</small></td>
+                        <td><small>${report.comment || '-'}</small></td>
+                        <td><span class="badge bg-${report.source === 'auto' ? 'primary' : 'secondary'}">${report.source || 'manual'}</span></td>
+                        <td><small>${new Date(report.created_at).toLocaleString()}</small></td>
+                    </tr>
+                `;
+            }).join('');
+        }
+    } catch (error) {
+        console.error('Error loading AbuseIPDB queue:', error);
+    }
+}
+
+function toggleSelectAllQueue() {
+    const selectAll = document.getElementById('select-all-checkbox') || document.getElementById('select-all-queue');
+    const checkboxes = document.querySelectorAll('.queue-checkbox');
+    checkboxes.forEach(cb => cb.checked = selectAll.checked);
+}
+
+async function submitSelectedReports() {
+    const selected = Array.from(document.querySelectorAll('.queue-checkbox:checked')).map(cb => parseInt(cb.value));
+    
+    if (selected.length === 0) {
+        showAlert('Please select at least one report to submit', 'warning');
+        return;
+    }
+    
+    if (!confirm(`Submit ${selected.length} report(s) to AbuseIPDB?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/abuseipdb/queue/submit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: selected }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert(result.message, 'success');
+            loadAbuseIPDBQueue();
+            loadAbuseIPDBStatus();
+        } else {
+            showAlert(result.error || 'Error submitting reports', 'danger');
+        }
+    } catch (error) {
+        console.error('Error submitting reports:', error);
+        showAlert('Error submitting reports', 'danger');
+    }
+}
+
+async function deleteSelectedReports() {
+    const selected = Array.from(document.querySelectorAll('.queue-checkbox:checked')).map(cb => parseInt(cb.value));
+    
+    if (selected.length === 0) {
+        showAlert('Please select at least one report to delete', 'warning');
+        return;
+    }
+    
+    if (!confirm(`Delete ${selected.length} report(s)?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/abuseipdb/queue/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: selected }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert(result.message, 'success');
+            loadAbuseIPDBQueue();
+            loadAbuseIPDBStatus();
+        } else {
+            showAlert(result.error || 'Error deleting reports', 'danger');
+        }
+    } catch (error) {
+        console.error('Error deleting reports:', error);
+        showAlert('Error deleting reports', 'danger');
+    }
+}
+
 // Tab Navigation
 document.addEventListener('DOMContentLoaded', function() {
     console.log('=== bWall Dashboard Initialization ===');
@@ -204,6 +356,7 @@ function switchTab(tabName) {
             case 'blacklist':
                 console.log('Loading blacklist data...');
                 loadBlacklist();
+                loadAbuseIPDBStatus();
                 break;
             case 'rules':
                 console.log('Loading rules data...');
@@ -413,15 +566,21 @@ async function loadBlacklist() {
         
         const tbody = document.getElementById('blacklist-table');
         if (entries.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No blacklist entries</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No blacklist entries</td></tr>';
             return;
         }
         
+        // Check AbuseIPDB status for each entry (async, will update as results come in)
         tbody.innerHTML = entries.map(entry => `
-            <tr>
+            <tr id="blacklist-row-${entry.id}">
                 <td>${entry.id}</td>
                 <td><code>${entry.ip_address}</code></td>
                 <td>${entry.description || '-'}</td>
+                <td id="abuseipdb-${entry.id}">
+                    <button class="btn btn-sm btn-outline-info" onclick="checkAbuseIPDBForEntry('${entry.ip_address}', ${entry.id})" title="Check AbuseIPDB">
+                        <i class="bi bi-search"></i>
+                    </button>
+                </td>
                 <td>${new Date(entry.created_at).toLocaleString()}</td>
                 <td>
                     <button class="btn btn-sm btn-danger" onclick="deleteBlacklistEntry(${entry.id})">
@@ -430,34 +589,111 @@ async function loadBlacklist() {
                 </td>
             </tr>
         `).join('');
+        
+        // Optionally pre-check AbuseIPDB for all entries (can be slow, so commented out)
+        // entries.forEach(entry => {
+        //     checkAbuseIPDBForEntry(entry.ip_address, entry.id, false);
+        // });
     } catch (error) {
         console.error('Error loading blacklist:', error);
         showAlert('Error loading blacklist', 'danger');
     }
 }
 
+async function checkAbuseIPDB() {
+    const ip = document.getElementById('blacklist-ip').value.trim();
+    const resultDiv = document.getElementById('abuseipdb-check-result');
+    
+    if (!ip) {
+        resultDiv.innerHTML = '<div class="alert alert-warning">Please enter an IP address first</div>';
+        return;
+    }
+    
+    resultDiv.innerHTML = '<div class="text-info"><i class="bi bi-hourglass-split"></i> Checking...</div>';
+    
+    try {
+        const response = await fetch(`${API_BASE}/abuseipdb/check?ip=${encodeURIComponent(ip)}&maxAgeInDays=90&verbose=true`, fetchOptions);
+        const result = await response.json();
+        
+        if (response.ok && result.data) {
+            const data = result.data;
+            const score = data.abuseConfidenceScore || 0;
+            const scoreClass = score >= 75 ? 'danger' : score >= 50 ? 'warning' : 'success';
+            
+            let html = `<div class="alert alert-${scoreClass}">`;
+            html += `<strong>Abuse Confidence Score: ${score}%</strong><br>`;
+            html += `Total Reports: ${data.totalReports || 0}<br>`;
+            html += `Country: ${data.countryName || 'Unknown'} (${data.countryCode || 'N/A'})<br>`;
+            html += `ISP: ${data.isp || 'Unknown'}<br>`;
+            if (data.isWhitelisted) {
+                html += `<span class="badge bg-info">Whitelisted</span> `;
+            }
+            if (data.isTor) {
+                html += `<span class="badge bg-dark">Tor Exit Node</span>`;
+            }
+            html += `</div>`;
+            
+            if (data.reports && data.reports.length > 0) {
+                html += `<details class="mt-2"><summary>Recent Reports (${data.reports.length})</summary><ul class="small mt-2">`;
+                data.reports.slice(0, 5).forEach(report => {
+                    html += `<li>${new Date(report.reportedAt).toLocaleString()}: ${report.comment || 'No comment'}</li>`;
+                });
+                html += `</ul></details>`;
+            }
+            
+            resultDiv.innerHTML = html;
+        } else {
+            resultDiv.innerHTML = `<div class="alert alert-warning">${result.error || 'Unable to check AbuseIPDB'}</div>`;
+        }
+    } catch (error) {
+        console.error('Error checking AbuseIPDB:', error);
+        resultDiv.innerHTML = `<div class="alert alert-danger">Error checking AbuseIPDB: ${error.message}</div>`;
+    }
+}
+
 async function addBlacklistEntry() {
-    const ip = document.getElementById('blacklist-ip').value;
-    const desc = document.getElementById('blacklist-desc').value;
+    const ip = document.getElementById('blacklist-ip').value.trim();
+    const desc = document.getElementById('blacklist-desc').value.trim();
+    const reportToAbuseIPDB = document.getElementById('report-to-abuseipdb')?.checked || false;
     
     if (!ip) {
         showAlert('Please enter an IP address', 'warning');
         return;
     }
     
+    const body = {
+        ip_address: ip,
+        description: desc,
+        report_to_abuseipdb: reportToAbuseIPDB
+    };
+    
+    if (reportToAbuseIPDB) {
+        const categories = Array.from(document.querySelectorAll('input[name="abuseipdb-cat"]:checked'))
+            .map(cb => cb.value);
+        if (categories.length > 0) {
+            body.abuseipdb_categories = categories;
+        }
+    }
+    
     try {
         const response = await fetch(`${API_BASE}/blacklist`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ip_address: ip, description: desc }),
+            body: JSON.stringify(body),
             credentials: 'include'
         });
         
         const result = await response.json();
         if (response.ok) {
-            showAlert('Blacklist entry added successfully', 'success');
+            let message = 'Blacklist entry added successfully';
+            if (result.abuseipdb_reported) {
+                message += ' and reported to AbuseIPDB';
+            }
+            showAlert(message, 'success');
             bootstrap.Modal.getInstance(document.getElementById('addBlacklistModal')).hide();
             document.getElementById('blacklist-form').reset();
+            const resultDiv = document.getElementById('abuseipdb-check-result');
+            if (resultDiv) resultDiv.innerHTML = '';
             loadBlacklist();
             refreshStats();
         } else {
@@ -469,6 +705,36 @@ async function addBlacklistEntry() {
     }
 }
 
+async function checkAbuseIPDBForEntry(ip, entryId, showDetails = true) {
+    const cell = document.getElementById(`abuseipdb-${entryId}`);
+    if (!cell) return;
+    
+    cell.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+    
+    try {
+        const response = await fetch(`${API_BASE}/abuseipdb/check?ip=${encodeURIComponent(ip)}&maxAgeInDays=90`, fetchOptions);
+        const result = await response.json();
+        
+        if (response.ok && result.data) {
+            const data = result.data;
+            const score = data.abuseConfidenceScore || 0;
+            const scoreClass = score >= 75 ? 'danger' : score >= 50 ? 'warning' : 'success';
+            const badgeClass = score >= 75 ? 'bg-danger' : score >= 50 ? 'bg-warning' : 'bg-success';
+            
+            let html = `<span class="badge ${badgeClass}" title="Abuse Confidence Score: ${score}%">${score}%</span>`;
+            if (showDetails && data.totalReports > 0) {
+                html += ` <small class="text-muted">(${data.totalReports} reports)</small>`;
+            }
+            cell.innerHTML = html;
+        } else {
+            cell.innerHTML = '<span class="badge bg-secondary" title="Unable to check">N/A</span>';
+        }
+    } catch (error) {
+        console.error('Error checking AbuseIPDB for entry:', error);
+        cell.innerHTML = '<span class="badge bg-secondary" title="Error checking">Error</span>';
+    }
+}
+
 async function deleteBlacklistEntry(id) {
     if (!confirm('Are you sure you want to delete this blacklist entry?')) {
         return;
@@ -477,19 +743,24 @@ async function deleteBlacklistEntry(id) {
     try {
         const response = await fetch(`${API_BASE}/blacklist/${id}`, {
             method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
             credentials: 'include'
         });
         
+        const result = await response.json();
+        
         if (response.ok) {
-            showAlert('Blacklist entry deleted successfully', 'success');
+            showAlert(result.message || 'Blacklist entry deleted successfully', 'success');
             loadBlacklist();
             refreshStats();
         } else {
-            showAlert('Error deleting blacklist entry', 'danger');
+            const errorMsg = result.error || result.message || 'Error deleting blacklist entry';
+            console.error('Delete blacklist error:', errorMsg);
+            showAlert(errorMsg, 'danger');
         }
     } catch (error) {
         console.error('Error deleting blacklist entry:', error);
-        showAlert('Error deleting blacklist entry', 'danger');
+        showAlert(`Error deleting blacklist entry: ${error.message}`, 'danger');
     }
 }
 

@@ -100,6 +100,11 @@
                             <i class="bi bi-shield-exclamation me-2"></i>Active Monitoring
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-tab="reports">
+                            <i class="bi bi-graph-up me-2"></i>Reports
+                        </a>
+                    </li>
                 </ul>
             </nav>
 
@@ -275,13 +280,58 @@
                                             <th>ID</th>
                                             <th>IP Address/CIDR</th>
                                             <th>Description</th>
+                                            <th>AbuseIPDB</th>
                                             <th>Created</th>
                                             <th>Actions</th>
                                         </tr>
                                     </thead>
                                     <tbody id="blacklist-table">
                                         <tr>
-                                            <td colspan="5" class="text-center text-muted">Loading...</td>
+                                            <td colspan="6" class="text-center text-muted">Loading...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- AbuseIPDB Queue Card (only shown if mode is log_and_hold) -->
+                    <div class="card mt-4" id="abuseipdb-queue-card" style="display: none;">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">AbuseIPDB Report Queue</h5>
+                            <div>
+                                <button class="btn btn-sm btn-success" onclick="submitSelectedReports()">
+                                    <i class="bi bi-send me-1"></i>Submit Selected
+                                </button>
+                                <button class="btn btn-sm btn-danger" onclick="deleteSelectedReports()">
+                                    <i class="bi bi-trash me-1"></i>Delete Selected
+                                </button>
+                                <button class="btn btn-sm btn-outline-primary" onclick="loadAbuseIPDBQueue()">
+                                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                                </button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <input type="checkbox" id="select-all-queue" onchange="toggleSelectAllQueue()">
+                                <label for="select-all-queue" class="ms-2">Select All</label>
+                                <span id="queue-count" class="badge bg-info ms-3">0 pending</span>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-hover table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th width="30"><input type="checkbox" id="select-all-checkbox" onchange="toggleSelectAllQueue()"></th>
+                                            <th>IP Address</th>
+                                            <th>Categories</th>
+                                            <th>Comment</th>
+                                            <th>Source</th>
+                                            <th>Created</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="abuseipdb-queue-table">
+                                        <tr>
+                                            <td colspan="6" class="text-center text-muted">Loading...</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -623,11 +673,66 @@
                     <form id="blacklist-form">
                         <div class="mb-3">
                             <label class="form-label">IP Address/CIDR</label>
-                            <input type="text" class="form-control" id="blacklist-ip" placeholder="192.168.1.1 or 192.168.1.0/24" required>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="blacklist-ip" placeholder="192.168.1.1 or 192.168.1.0/24" required>
+                                <button type="button" class="btn btn-outline-info" onclick="checkAbuseIPDB()" title="Check IP against AbuseIPDB">
+                                    <i class="bi bi-search"></i> Check
+                                </button>
+                            </div>
+                            <div id="abuseipdb-check-result" class="mt-2"></div>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Description</label>
                             <input type="text" class="form-control" id="blacklist-desc" placeholder="Optional description">
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="report-to-abuseipdb">
+                                <label class="form-check-label" for="report-to-abuseipdb">
+                                    Report to AbuseIPDB
+                                </label>
+                            </div>
+                        </div>
+                        <div id="abuseipdb-categories" style="display: none;">
+                            <label class="form-label">Abuse Categories</label>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="abuseipdb-cat" value="brute_force" id="cat-brute-force">
+                                        <label class="form-check-label" for="cat-brute-force">Brute Force</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="abuseipdb-cat" value="ssh" id="cat-ssh">
+                                        <label class="form-check-label" for="cat-ssh">SSH</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="abuseipdb-cat" value="web_app_attack" id="cat-web-attack">
+                                        <label class="form-check-label" for="cat-web-attack">Web App Attack</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="abuseipdb-cat" value="port_scan" id="cat-port-scan">
+                                        <label class="form-check-label" for="cat-port-scan">Port Scan</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="abuseipdb-cat" value="spam" id="cat-spam">
+                                        <label class="form-check-label" for="cat-spam">Spam</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="abuseipdb-cat" value="hacking" id="cat-hacking">
+                                        <label class="form-check-label" for="cat-hacking">Hacking</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="abuseipdb-cat" value="ddos_attack" id="cat-ddos">
+                                        <label class="form-check-label" for="cat-ddos">DDoS Attack</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="abuseipdb-cat" value="other" id="cat-other" checked>
+                                        <label class="form-check-label" for="cat-other">Other</label>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </form>
                 </div>

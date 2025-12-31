@@ -248,7 +248,8 @@ class LogMonitor:
                 
                 # Apply iptables rule
                 if self.block_callback:
-                    self.block_callback(ip)
+                    # Pass service and attack_type to callback for AbuseIPDB reporting
+                    self.block_callback(ip, service, attack_type)
                 else:
                     self._apply_iptables_block(ip)
                 

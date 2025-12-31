@@ -391,6 +391,24 @@ CREATE TABLE IF NOT EXISTS sync_log (
     INDEX idx_timestamp (timestamp),
     INDEX idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- AbuseIPDB report queue table
+CREATE TABLE IF NOT EXISTS abuseipdb_queue (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ip_address VARCHAR(45) NOT NULL,
+    categories JSON NOT NULL,
+    comment TEXT,
+    service VARCHAR(50),
+    attack_type VARCHAR(50),
+    source VARCHAR(20) DEFAULT 'auto',
+    status VARCHAR(20) DEFAULT 'pending',
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    submitted_at TIMESTAMP NULL,
+    INDEX idx_status (status),
+    INDEX idx_ip (ip_address),
+    INDEX idx_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 EOF
 
 if [ $? -eq 0 ]; then
@@ -557,6 +575,50 @@ fi
 
 echo ""
 
+# Step 5b: AbuseIPDB Configuration
+print_info "Step 5b: AbuseIPDB Configuration (Optional)"
+echo "AbuseIPDB integration allows you to report and check abusive IPs."
+echo "Get your API key from: https://www.abuseipdb.com/pricing"
+echo ""
+
+read -p "Would you like to configure AbuseIPDB integration? (y/n): " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    read -sp "AbuseIPDB API Key: " ABUSEIPDB_API_KEY
+    echo ""
+    if [ -n "$ABUSEIPDB_API_KEY" ]; then
+        print_success "AbuseIPDB API key collected"
+        echo ""
+        echo "AbuseIPDB Reporting Mode:"
+        echo "  1) automatic - Report immediately when IPs are blocked"
+        echo "  2) log_and_hold - Queue reports for review before submitting"
+        echo "  3) log_only - Only log events, do not report"
+        read -p "Select mode [1-3] (default: 1): " MODE_CHOICE
+        case $MODE_CHOICE in
+            2)
+                ABUSEIPDB_MODE="log_and_hold"
+                ;;
+            3)
+                ABUSEIPDB_MODE="log_only"
+                ;;
+            *)
+                ABUSEIPDB_MODE="automatic"
+                ;;
+        esac
+        print_success "AbuseIPDB mode set to: $ABUSEIPDB_MODE"
+    else
+        print_warning "No API key provided, skipping AbuseIPDB configuration"
+        ABUSEIPDB_API_KEY=""
+        ABUSEIPDB_MODE="automatic"
+    fi
+else
+    print_info "Skipping AbuseIPDB configuration. You can configure it later in the .env file."
+    ABUSEIPDB_API_KEY=""
+    ABUSEIPDB_MODE="automatic"
+fi
+
+echo ""
+
 # Step 6: Create Environment File
 print_info "Step 6: Creating environment configuration file..."
 
@@ -592,6 +654,24 @@ else
 # OIDC_REDIRECT_URI=
 # OIDC_POST_LOGOUT_REDIRECT_URI=
 # SECRET_KEY=
+EOF
+fi
+
+# AbuseIPDB Configuration
+if [ -n "$ABUSEIPDB_API_KEY" ]; then
+    cat >> "$ENV_FILE" <<EOF
+
+# AbuseIPDB Configuration
+ABUSEIPDB_API_KEY=$ABUSEIPDB_API_KEY
+ABUSEIPDB_MODE=$ABUSEIPDB_MODE
+EOF
+else
+    cat >> "$ENV_FILE" <<EOF
+
+# AbuseIPDB Configuration (optional)
+# Get your API key from: https://www.abuseipdb.com/pricing
+# ABUSEIPDB_API_KEY=
+# ABUSEIPDB_MODE=automatic  # Options: automatic, log_and_hold, log_only
 EOF
 fi
 
@@ -675,6 +755,17 @@ else
     echo "OIDC Configuration:"
     echo "  ⚠ OIDC not configured (optional)"
     echo "  To configure later, edit .env file or set environment variables"
+    echo ""
+fi
+
+if [ -n "$ABUSEIPDB_API_KEY" ]; then
+    echo "AbuseIPDB Configuration:"
+    echo "  ✓ AbuseIPDB integration enabled"
+    echo ""
+else
+    echo "AbuseIPDB Configuration:"
+    echo "  ⚠ AbuseIPDB not configured (optional)"
+    echo "  To configure later, edit .env file and set ABUSEIPDB_API_KEY"
     echo ""
 fi
 
