@@ -12,25 +12,37 @@ let currentUser = null;
 
 // Tab Navigation
 document.addEventListener('DOMContentLoaded', function() {
-    // Check authentication status first
-    checkAuthentication().then(() => {
-        // Initialize tabs
-        const navLinks = document.querySelectorAll('.sidebar .nav-link');
-        navLinks.forEach(link => {
-            link.addEventListener('click', function(e) {
-                e.preventDefault();
-                const tab = this.getAttribute('data-tab');
-                switchTab(tab);
-            });
+    console.log('DOM loaded, initializing...');
+    
+    // Initialize tabs immediately (don't wait for auth)
+    const navLinks = document.querySelectorAll('.sidebar .nav-link');
+    console.log('Found nav links:', navLinks.length);
+    
+    navLinks.forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            const tab = this.getAttribute('data-tab');
+            console.log('Nav link clicked, switching to tab:', tab);
+            switchTab(tab);
         });
+    });
 
-        // Load initial data
-        switchTab('dashboard');
+    // Load initial data
+    console.log('Switching to dashboard tab...');
+    switchTab('dashboard');
+    
+    // Check authentication in background (non-blocking)
+    checkAuthentication().then(() => {
+        console.log('Authentication check completed');
         refreshStats();
     }).catch(error => {
         console.error('Authentication check failed:', error);
-        // If authentication fails, the page will redirect to login
+        // Continue anyway - load stats
+        console.log('Loading stats despite auth error...');
+        refreshStats();
     });
+    
+    console.log('Initialization complete');
 });
 
 // Authentication Functions
@@ -40,27 +52,38 @@ async function checkAuthentication() {
             credentials: 'include'
         });
         
-        if (response.status === 401 || response.status === 403) {
-            // Not authenticated, will be redirected by OIDC
-            return;
-        }
-        
         if (response.ok) {
             const data = await response.json();
             if (data.authenticated) {
                 isAuthenticated = true;
                 currentUser = data.user;
                 updateUserInterface();
+            } else if (data.oidc_available === false) {
+                // OIDC not available (e.g., Python 3.13), allow access
+                console.log('OIDC not available, running without authentication');
+                isAuthenticated = true;
             }
+            // If authenticated is false but oidc_available is true, 
+            // user needs to authenticate (will be handled by OIDC redirect)
+        } else if (response.status === 401 || response.status === 403) {
+            // Check if OIDC is available - if not, allow access
+            try {
+                const data = await response.json();
+                if (data.oidc_available === false) {
+                    isAuthenticated = true;
+                    return;
+                }
+            } catch (e) {
+                // If we can't parse response, assume OIDC redirect will handle it
+            }
+            // Not authenticated, will be redirected by OIDC if available
+            return;
         }
     } catch (error) {
         console.error('Error checking authentication:', error);
-        // If OIDC is not configured, continue without authentication
-        if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-            // API might not be running or OIDC not configured
-            console.log('Assuming OIDC is not configured, continuing without authentication');
-            isAuthenticated = true; // Allow access if OIDC is not configured
-        }
+        // If OIDC is not configured or not available, continue without authentication
+        console.log('Continuing without authentication');
+        isAuthenticated = true; // Allow access if OIDC is not configured
     }
 }
 
@@ -100,47 +123,84 @@ async function logout() {
 }
 
 function switchTab(tabName) {
+    console.log('Switching to tab:', tabName);
+    
+    if (!tabName) {
+        console.error('No tab name provided');
+        return;
+    }
+    
     // Hide all tabs
-    document.querySelectorAll('.tab-content').forEach(tab => {
+    const allTabs = document.querySelectorAll('.tab-content');
+    console.log('Found tab-content elements:', allTabs.length);
+    allTabs.forEach(tab => {
         tab.style.display = 'none';
     });
 
     // Remove active class from nav links
-    document.querySelectorAll('.sidebar .nav-link').forEach(link => {
+    const allNavLinks = document.querySelectorAll('.sidebar .nav-link');
+    allNavLinks.forEach(link => {
         link.classList.remove('active');
     });
 
     // Show selected tab
-    const tabElement = document.getElementById(`${tabName}-tab`);
+    const tabId = `${tabName}-tab`;
+    const tabElement = document.getElementById(tabId);
     if (tabElement) {
         tabElement.style.display = 'block';
+        console.log('Tab displayed:', tabName, 'ID:', tabId);
+    } else {
+        console.error('Tab element not found. Looking for ID:', tabId);
+        console.log('Available tab IDs:', Array.from(document.querySelectorAll('.tab-content')).map(t => t.id));
     }
 
     // Add active class to nav link
     const navLink = document.querySelector(`[data-tab="${tabName}"]`);
     if (navLink) {
         navLink.classList.add('active');
+        console.log('Nav link activated for:', tabName);
+    } else {
+        console.error('Nav link not found for tab:', tabName);
+        console.log('Available data-tab values:', Array.from(document.querySelectorAll('[data-tab]')).map(l => l.getAttribute('data-tab')));
     }
 
     // Load tab-specific data
-    switch(tabName) {
-        case 'whitelist':
-            loadWhitelist();
-            break;
-        case 'blacklist':
-            loadBlacklist();
-            break;
-        case 'rules':
-            loadRules();
-            break;
-        case 'sync':
-            checkDbStatus();
-            break;
-        case 'monitor':
-            loadMonitorStatus();
-            loadMonitorConfig();
-            loadRecentBlocks();
-            break;
+    try {
+        switch(tabName) {
+            case 'whitelist':
+                console.log('Loading whitelist data...');
+                loadWhitelist();
+                break;
+            case 'blacklist':
+                console.log('Loading blacklist data...');
+                loadBlacklist();
+                break;
+            case 'rules':
+                console.log('Loading rules data...');
+                loadRules();
+                break;
+            case 'sync':
+                console.log('Loading sync data...');
+                checkDbStatus();
+                break;
+            case 'monitor':
+                console.log('Loading monitor data...');
+                loadMonitorStatus();
+                loadMonitorConfig();
+                loadRecentBlocks();
+                break;
+            case 'dashboard':
+                console.log('Loading dashboard data...');
+                refreshStats();
+                break;
+            case 'import-export':
+                console.log('Import/Export tab - no data to load');
+                break;
+            default:
+                console.warn('Unknown tab:', tabName);
+        }
+    } catch (error) {
+        console.error('Error loading tab data for', tabName, ':', error);
     }
 }
 
@@ -150,23 +210,46 @@ async function refreshStats() {
         const response = await fetch(`${API_BASE}/stats`, fetchOptions);
         
         if (response.status === 401 || response.status === 403) {
-            // Authentication required - will be handled by OIDC redirect
+            // Check if OIDC is available
+            try {
+                const authCheck = await fetch(`${API_BASE}/auth/user`, fetchOptions);
+                const authData = await authCheck.json();
+                if (authData.oidc_available === false) {
+                    // OIDC not available, but we should still be able to access
+                    // This might be a different issue
+                    console.warn('Stats endpoint returned 401/403 but OIDC not available');
+                }
+            } catch (e) {
+                // Ignore
+            }
             return;
+        }
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
         }
         
         const data = await response.json();
         
-        document.getElementById('stat-total-rules').textContent = data.total_rules || 0;
-        document.getElementById('stat-whitelist').textContent = data.whitelist_count || 0;
-        document.getElementById('stat-blacklist').textContent = data.blacklist_count || 0;
-        document.getElementById('stat-sync-status').textContent = data.db_connected ? 'Connected' : 'Disconnected';
+        if (document.getElementById('stat-total-rules')) {
+            document.getElementById('stat-total-rules').textContent = data.total_rules || 0;
+        }
+        if (document.getElementById('stat-whitelist')) {
+            document.getElementById('stat-whitelist').textContent = data.whitelist_count || 0;
+        }
+        if (document.getElementById('stat-blacklist')) {
+            document.getElementById('stat-blacklist').textContent = data.blacklist_count || 0;
+        }
+        if (document.getElementById('stat-sync-status')) {
+            document.getElementById('stat-sync-status').textContent = data.db_connected ? 'Connected' : 'Disconnected';
+        }
         
         loadActivityLog();
     } catch (error) {
         console.error('Error refreshing stats:', error);
-        // Don't show alert if it's an authentication error (will redirect)
-        if (!error.message.includes('401') && !error.message.includes('403')) {
-            showAlert('Error loading statistics', 'danger');
+        // Show error in console but don't block the UI
+        if (error.message && !error.message.includes('401') && !error.message.includes('403')) {
+            console.warn('Could not load statistics:', error.message);
         }
     }
 }

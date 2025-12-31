@@ -58,7 +58,7 @@ if os.path.exists('.env'):
                 key, value = line.split('=', 1)
                 os.environ[key.strip()] = value.strip()
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='.', static_url_path='')
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-this-secret-key-in-production')
 
 # OIDC Configuration
@@ -143,6 +143,7 @@ def require_auth(f):
         return auth.oidc_auth('default')(f)
     else:
         # If OIDC is not configured or not available, allow access (for development)
+        # This allows the app to work without OIDC on Python 3.13
         return f
 
 def get_user_info():
@@ -961,15 +962,33 @@ def index():
     # Database configured, require auth and serve dashboard
     @require_auth
     def serve_dashboard():
-        return send_file('index.html')
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        index_path = os.path.join(app_dir, 'index.html')
+        return send_file(index_path)
     
     return serve_dashboard()
+
+# Static file routes (must be before other routes to avoid conflicts)
+@app.route('/app.js')
+def app_js():
+    """Serve main application JavaScript (no auth required)"""
+    try:
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        app_js_path = os.path.join(app_dir, 'app.js')
+        if os.path.exists(app_js_path):
+            return send_file(app_js_path, mimetype='application/javascript')
+        else:
+            return jsonify({'error': f'Application script not found at {app_js_path}'}), 404
+    except Exception as e:
+        return jsonify({'error': f'Error serving app.js: {str(e)}'}), 500
 
 @app.route('/installer')
 def installer():
     """Serve the web installer (no auth required, accessible on all interfaces)"""
     try:
-        return send_file('installer.html')
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        installer_path = os.path.join(app_dir, 'installer.html')
+        return send_file(installer_path)
     except FileNotFoundError:
         return jsonify({'error': 'Installer not found'}), 404
 
@@ -977,21 +996,41 @@ def installer():
 def installer_js():
     """Serve installer JavaScript (no auth required)"""
     try:
-        return send_file('installer.js', mimetype='application/javascript')
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        installer_js_path = os.path.join(app_dir, 'installer.js')
+        return send_file(installer_js_path, mimetype='application/javascript')
     except FileNotFoundError:
         return jsonify({'error': 'Installer script not found'}), 404
 
 @app.route('/api/auth/user', methods=['GET'])
-@require_auth
 def get_user():
     """Get current authenticated user information"""
-    user_info = get_user_info()
-    if user_info:
+    # If OIDC is not available, return unauthenticated but allow access
+    if not OIDC_AVAILABLE or not auth:
         return jsonify({
-            'authenticated': True,
-            'user': user_info
+            'authenticated': False,
+            'oidc_available': False,
+            'message': 'OIDC not available - running without authentication'
         })
-    return jsonify({'authenticated': False}), 401
+    
+    # Try to get user info if OIDC is available
+    try:
+        user_info = get_user_info()
+        if user_info:
+            return jsonify({
+                'authenticated': True,
+                'user': user_info
+            })
+        return jsonify({
+            'authenticated': False,
+            'oidc_available': True
+        })
+    except:
+        # If auth check fails but OIDC is available, return unauthenticated
+        return jsonify({
+            'authenticated': False,
+            'oidc_available': True
+        })
 
 @app.route('/api/auth/logout', methods=['POST'])
 def logout():
