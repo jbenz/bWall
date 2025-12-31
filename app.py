@@ -3757,6 +3757,8 @@ def get_public_settings():
 
 def auto_sync_url_lists():
     """Background task to auto-sync URL lists"""
+    from datetime import datetime  # Import at function level to ensure it's available
+    
     while True:
         try:
             conn = get_db_connection()
@@ -3773,8 +3775,22 @@ def auto_sync_url_lists():
                         if url_list['last_sync']:
                             last_sync = url_list['last_sync']
                             if isinstance(last_sync, str):
-                                from datetime import datetime
                                 last_sync = datetime.fromisoformat(last_sync.replace('Z', '+00:00'))
+                            elif isinstance(last_sync, datetime):
+                                # Already a datetime object, use as-is
+                                pass
+                            else:
+                                # Try to convert from MySQL datetime/timestamp
+                                try:
+                                    if hasattr(last_sync, 'isoformat'):
+                                        # It's already a datetime-like object
+                                        pass
+                                    else:
+                                        # Convert from string representation
+                                        last_sync = datetime.fromisoformat(str(last_sync).replace('Z', '+00:00'))
+                                except:
+                                    # If conversion fails, skip this sync
+                                    continue
                             
                             time_since_sync = (datetime.now() - last_sync).total_seconds()
                             if time_since_sync < url_list['sync_interval']:
