@@ -818,6 +818,7 @@ def init_database():
                 ('theme', 'default'),
                 ('system_name', 'bWall'),
                 ('login_banner', ''),
+                ('footer_text', 'bWall by bunit.net'),
                 ('proxy_enabled', 'false'),
                 ('proxy_servers', ''),
                 ('proxy_username', ''),
@@ -2276,9 +2277,21 @@ def installer_js():
     except FileNotFoundError:
         return jsonify({'error': 'Installer script not found'}), 404
 
+@app.route('/login.html')
+def login_html():
+    """Serve login page (no auth required)"""
+    try:
+        login_path = os.path.join(APP_DIR, 'login.html')
+        if os.path.exists(login_path):
+            return send_file(login_path)
+        else:
+            return jsonify({'error': 'Login page not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/')
 def index():
-    """Serve the dashboard HTML or redirect to installer if not configured"""
+    """Serve the dashboard HTML or login page"""
     # Check if .env exists and has database config
     if not os.path.exists('.env'):
         # No configuration, redirect to installer
@@ -2305,15 +2318,49 @@ def index():
         # Database not configured, redirect to installer
         return redirect('/installer')
     
-    # Database configured, require auth and serve dashboard
-    @require_auth
-    def serve_dashboard():
+    # Check authentication by checking session
+    authenticated = False
+    auth_method = None
+    
+    # Check session for authentication
+    try:
+        # Check ENV auth session
+        if 'env_auth_username' in session and session.get('env_auth_username') == ADMIN_USERNAME:
+            authenticated = True
+            auth_method = 'env'
+        # Check LOCAL auth session
+        elif 'local_auth_token' in session:
+            # Verify token is still valid
+            if check_local_auth():
+                authenticated = True
+                auth_method = 'local'
+        # Check OIDC auth session
+        elif 'user' in session and auth and OIDC_AVAILABLE:
+            authenticated = True
+            auth_method = 'oidc'
+    except:
+        pass
+    
+    if authenticated:
+        # User is authenticated, serve dashboard
         index_path = os.path.join(APP_DIR, 'index.html')
         if not os.path.exists(index_path):
             return jsonify({'error': f'index.html not found at {index_path}'}), 404
         return send_file(index_path)
-    
-    return serve_dashboard()
+    else:
+        # Not authenticated, serve login page
+        login_path = os.path.join(APP_DIR, 'login.html')
+        if not os.path.exists(login_path):
+            # Fallback: return JSON with auth info
+            return jsonify({
+                'authenticated': False,
+                'auth_types_available': AUTH_TYPES,
+                'env_auth_available': ENV_AUTH_ENABLED and ENV_AUTH_CONFIGURED,
+                'oidc_auth_available': OIDC_AUTH_ENABLED and auth is not None,
+                'local_auth_available': LOCAL_AUTH_ENABLED,
+                'error': 'Authentication required'
+            }), 401
+        return send_file(login_path)
 
 @app.route('/api/test', methods=['GET'])
 def test_endpoint():
@@ -2509,6 +2556,25 @@ def login():
             conn.close()
     
     return jsonify({'error': 'Invalid username or password'}), 401
+
+@app.route('/login')
+def login_route():
+    """OIDC login route - redirects to OIDC provider or login page"""
+    if OIDC_AUTH_ENABLED and auth and OIDC_AVAILABLE:
+        try:
+            # Use OIDC authentication
+            return auth.login()
+        except Exception as e:
+            print(f"[OIDC] Login error: {e}")
+            # Fall back to login page
+            return redirect('/')
+    # If OIDC not available, redirect to login page
+    return redirect('/')
+
+@app.route('/oidc_login')
+def oidc_login():
+    """Alias for /login - redirects to OIDC login if available"""
+    return redirect('/login')
 
 @app.route('/api/auth/user', methods=['GET'])
 def get_user():
@@ -4073,13 +4139,14 @@ def update_proxy_settings():
 
 @app.route('/api/settings/public', methods=['GET'])
 def get_public_settings():
-    """Get public settings (theme, system name, login banner) - no auth required"""
+    """Get public settings (theme, system name, login banner, footer) - no auth required"""
     conn = get_db_connection()
     if not conn:
         return jsonify({
             'theme': 'default',
             'system_name': 'bWall',
-            'login_banner': ''
+            'login_banner': '',
+            'footer_text': 'bWall by bunit.net'
         })
     
     try:
@@ -4087,20 +4154,22 @@ def get_public_settings():
             cursor.execute("""
                 SELECT setting_key, setting_value 
                 FROM system_settings 
-                WHERE setting_key IN ('theme', 'system_name', 'login_banner')
+                WHERE setting_key IN ('theme', 'system_name', 'login_banner', 'footer_text')
             """)
             settings = {row['setting_key']: row['setting_value'] for row in cursor.fetchall()}
             
             return jsonify({
                 'theme': settings.get('theme', 'default'),
                 'system_name': settings.get('system_name', 'bWall'),
-                'login_banner': settings.get('login_banner', '')
+                'login_banner': settings.get('login_banner', ''),
+                'footer_text': settings.get('footer_text', 'bWall by bunit.net')
             })
     except Exception as e:
         return jsonify({
             'theme': 'default',
             'system_name': 'bWall',
-            'login_banner': ''
+            'login_banner': '',
+            'footer_text': 'bWall by bunit.net'
         })
     finally:
         conn.close()

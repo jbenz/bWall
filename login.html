@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="login-page-title">bWall - Login | bunit.net</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        }
+        
+        .login-container {
+            background: white;
+            border-radius: 1rem;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            max-width: 500px;
+            width: 100%;
+            padding: 2rem;
+            margin: 2rem;
+        }
+        
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        
+        .login-header h1 {
+            color: #2c3e50;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+        
+        .login-header .subtitle {
+            color: #7f8c8d;
+            font-size: 0.9rem;
+        }
+        
+        .login-banner {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            color: #856404;
+            font-size: 0.9rem;
+            display: none;
+        }
+        
+        .login-banner.show {
+            display: block;
+        }
+        
+        .auth-option {
+            border: 2px solid #e9ecef;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            transition: all 0.3s ease;
+        }
+        
+        .auth-option:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+        }
+        
+        .auth-option h5 {
+            color: #2c3e50;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .auth-option .badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+        }
+        
+        .auth-option p {
+            color: #6c757d;
+            font-size: 0.85rem;
+            margin-bottom: 1rem;
+        }
+        
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        
+        .form-group label {
+            font-weight: 600;
+            color: #495057;
+            margin-bottom: 0.5rem;
+        }
+        
+        .btn-login {
+            width: 100%;
+            padding: 0.75rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+            border-radius: 0.5rem;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-login:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-oidc {
+            width: 100%;
+            padding: 0.75rem;
+            font-weight: 600;
+            background: #007bff;
+            border: none;
+            color: white;
+            border-radius: 0.5rem;
+        }
+        
+        .login-footer {
+            text-align: center;
+            margin-top: 2rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #e9ecef;
+            color: #6c757d;
+            font-size: 0.85rem;
+        }
+        
+        .error-message {
+            color: #dc3545;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+            display: none;
+        }
+        
+        .error-message.show {
+            display: block;
+        }
+        
+        .spinner-border-sm {
+            width: 1rem;
+            height: 1rem;
+            border-width: 0.15em;
+        }
+        
+        /* Dark theme support */
+        body.dark-theme {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        }
+        
+        body.dark-theme .login-container {
+            background: #2d2d2d;
+            color: #e0e0e0;
+        }
+        
+        body.dark-theme .login-header h1 {
+            color: #e0e0e0;
+        }
+        
+        body.dark-theme .auth-option {
+            border-color: #4d4d4d;
+            background: #3d3d3d;
+        }
+        
+        body.dark-theme .auth-option h5 {
+            color: #e0e0e0;
+        }
+        
+        body.dark-theme .form-control {
+            background-color: #2d2d2d;
+            border-color: #4d4d4d;
+            color: #e0e0e0;
+        }
+        
+        /* bTheme support */
+        body.btheme {
+            background: linear-gradient(135deg, #ff8c00 0%, #ff7f00 100%);
+        }
+        
+        body.btheme .login-container {
+            background: #fff5e6;
+            border: 2px solid #ff8c00;
+        }
+        
+        body.btheme .login-header h1 {
+            color: #8b4513;
+        }
+        
+        body.btheme .auth-option {
+            border-color: #ff8c00;
+            background: white;
+        }
+    </style>
+</head>
+<body id="login-body">
+    <div class="login-container">
+        <div class="login-header">
+            <h1 id="system-name">bWall</h1>
+            <div class="subtitle">Firewall Management Dashboard</div>
+            <div class="subtitle" style="font-size: 0.75rem; margin-top: 0.25rem;">by bunit.net</div>
+        </div>
+        
+        <div id="login-banner" class="login-banner"></div>
+        
+        <div id="auth-options-container">
+            <!-- Auth options will be dynamically loaded here -->
+            <div class="text-center">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="login-footer" id="login-footer">
+            <!-- Footer text will be loaded here -->
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const API_BASE = window.location.origin;
+        
+        // Load public settings (banner, system name, footer, theme)
+        async function loadPublicSettings() {
+            try {
+                const response = await fetch(`${API_BASE}/api/settings/public`);
+                const data = await response.json();
+                
+                // Set system name
+                if (data.system_name) {
+                    document.getElementById('system-name').textContent = data.system_name;
+                    document.getElementById('login-page-title').textContent = `${data.system_name} - Login | bunit.net`;
+                }
+                
+                // Set banner
+                const bannerDiv = document.getElementById('login-banner');
+                if (data.login_banner && data.login_banner.trim()) {
+                    bannerDiv.textContent = data.login_banner;
+                    bannerDiv.classList.add('show');
+                }
+                
+                // Set footer
+                const footerDiv = document.getElementById('login-footer');
+                if (data.footer_text && data.footer_text.trim()) {
+                    footerDiv.textContent = data.footer_text;
+                } else {
+                    footerDiv.textContent = 'bWall by bunit.net';
+                }
+                
+                // Apply theme
+                if (data.theme) {
+                    document.body.className = '';
+                    if (data.theme === 'dark') {
+                        document.body.classList.add('dark-theme');
+                    } else if (data.theme === 'btheme') {
+                        document.body.classList.add('btheme');
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading public settings:', error);
+            }
+        }
+        
+        // Load auth options
+        async function loadAuthOptions() {
+            try {
+                const response = await fetch(`${API_BASE}/api/auth/user`);
+                const data = await response.ok ? await response.json() : { authenticated: false };
+                
+                const container = document.getElementById('auth-options-container');
+                
+                if (data.authenticated) {
+                    // Already authenticated, redirect to dashboard
+                    window.location.href = '/';
+                    return;
+                }
+                
+                // Build auth options HTML
+                let html = '';
+                
+                // ENV Auth
+                if (data.env_auth_available) {
+                    html += `
+                        <div class="auth-option">
+                            <h5>
+                                <i class="bi bi-key-fill"></i>
+                                ENV Authentication
+                                <span class="badge bg-success ms-auto">Available</span>
+                            </h5>
+                            <p>Login with username and password from environment configuration</p>
+                            <form id="env-login-form" onsubmit="handleEnvLogin(event)">
+                                <div class="form-group">
+                                    <label for="env-username">Username</label>
+                                    <input type="text" class="form-control" id="env-username" required autocomplete="username">
+                                </div>
+                                <div class="form-group">
+                                    <label for="env-password">Password</label>
+                                    <input type="password" class="form-control" id="env-password" required autocomplete="current-password">
+                                </div>
+                                <div class="error-message" id="env-error"></div>
+                                <button type="submit" class="btn btn-login" id="env-login-btn">
+                                    <span class="btn-text">Login</span>
+                                    <span class="btn-spinner" style="display: none;">
+                                        <span class="spinner-border spinner-border-sm me-2"></span>Logging in...
+                                    </span>
+                                </button>
+                            </form>
+                        </div>
+                    `;
+                }
+                
+                // OIDC Auth
+                if (data.oidc_auth_available) {
+                    html += `
+                        <div class="auth-option">
+                            <h5>
+                                <i class="bi bi-shield-lock-fill"></i>
+                                OIDC Authentication
+                                <span class="badge bg-info ms-auto">Available</span>
+                            </h5>
+                            <p>Login using OpenID Connect (PocketID, etc.)</p>
+                            <button type="button" class="btn btn-oidc" onclick="handleOIDCLogin()">
+                                <i class="bi bi-box-arrow-in-right me-2"></i>Login with OIDC
+                            </button>
+                        </div>
+                    `;
+                }
+                
+                // LOCAL Auth
+                if (data.local_auth_available) {
+                    html += `
+                        <div class="auth-option">
+                            <h5>
+                                <i class="bi bi-person-fill-lock"></i>
+                                Local Authentication
+                                <span class="badge bg-secondary ms-auto">Available</span>
+                            </h5>
+                            <p>Login with database-backed user account</p>
+                            <form id="local-login-form" onsubmit="handleLocalLogin(event)">
+                                <div class="form-group">
+                                    <label for="local-username">Username</label>
+                                    <input type="text" class="form-control" id="local-username" required autocomplete="username">
+                                </div>
+                                <div class="form-group">
+                                    <label for="local-password">Password</label>
+                                    <input type="password" class="form-control" id="local-password" required autocomplete="current-password">
+                                </div>
+                                <div class="error-message" id="local-error"></div>
+                                <button type="submit" class="btn btn-login" id="local-login-btn">
+                                    <span class="btn-text">Login</span>
+                                    <span class="btn-spinner" style="display: none;">
+                                        <span class="spinner-border spinner-border-sm me-2"></span>Logging in...
+                                    </span>
+                                </button>
+                            </form>
+                        </div>
+                    `;
+                }
+                
+                if (!html) {
+                    html = '<div class="alert alert-warning">No authentication methods available. Please contact your administrator.</div>';
+                }
+                
+                container.innerHTML = html;
+            } catch (error) {
+                console.error('Error loading auth options:', error);
+                document.getElementById('auth-options-container').innerHTML = 
+                    '<div class="alert alert-danger">Error loading authentication options. Please refresh the page.</div>';
+            }
+        }
+        
+        // Handle ENV login
+        async function handleEnvLogin(event) {
+            event.preventDefault();
+            const username = document.getElementById('env-username').value.trim();
+            const password = document.getElementById('env-password').value;
+            const errorDiv = document.getElementById('env-error');
+            const btn = document.getElementById('env-login-btn');
+            const btnText = btn.querySelector('.btn-text');
+            const btnSpinner = btn.querySelector('.btn-spinner');
+            
+            errorDiv.classList.remove('show');
+            errorDiv.textContent = '';
+            btn.disabled = true;
+            btnText.style.display = 'none';
+            btnSpinner.style.display = 'inline';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password }),
+                    credentials: 'include'
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.authenticated) {
+                    // Login successful, redirect to dashboard
+                    window.location.href = '/';
+                } else {
+                    // Login failed
+                    errorDiv.textContent = result.error || 'Login failed';
+                    errorDiv.classList.add('show');
+                    document.getElementById('env-password').value = '';
+                    btn.disabled = false;
+                    btnText.style.display = 'inline';
+                    btnSpinner.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                errorDiv.textContent = 'Error connecting to server';
+                errorDiv.classList.add('show');
+                btn.disabled = false;
+                btnText.style.display = 'inline';
+                btnSpinner.style.display = 'none';
+            }
+        }
+        
+        // Handle LOCAL login
+        async function handleLocalLogin(event) {
+            event.preventDefault();
+            const username = document.getElementById('local-username').value.trim();
+            const password = document.getElementById('local-password').value;
+            const errorDiv = document.getElementById('local-error');
+            const btn = document.getElementById('local-login-btn');
+            const btnText = btn.querySelector('.btn-text');
+            const btnSpinner = btn.querySelector('.btn-spinner');
+            
+            errorDiv.classList.remove('show');
+            errorDiv.textContent = '';
+            btn.disabled = true;
+            btnText.style.display = 'none';
+            btnSpinner.style.display = 'inline';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password }),
+                    credentials: 'include'
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.authenticated) {
+                    // Login successful, redirect to dashboard
+                    window.location.href = '/';
+                } else {
+                    // Login failed
+                    errorDiv.textContent = result.error || 'Login failed';
+                    errorDiv.classList.add('show');
+                    document.getElementById('local-password').value = '';
+                    btn.disabled = false;
+                    btnText.style.display = 'inline';
+                    btnSpinner.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                errorDiv.textContent = 'Error connecting to server';
+                errorDiv.classList.add('show');
+                btn.disabled = false;
+                btnText.style.display = 'inline';
+                btnSpinner.style.display = 'none';
+            }
+        }
+        
+        // Handle OIDC login
+        function handleOIDCLogin() {
+            // OIDC will handle the redirect
+            window.location.href = '/oidc_login';
+        }
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadPublicSettings();
+            loadAuthOptions();
+        });
+    </script>
+</body>
+</html>
+
