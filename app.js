@@ -408,6 +408,528 @@ function formatBytes(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// URL Lists Functions
+document.addEventListener('DOMContentLoaded', function() {
+    const autoSyncCheckbox = document.getElementById('url-list-auto-sync');
+    const syncIntervalGroup = document.getElementById('url-sync-interval-group');
+    
+    if (autoSyncCheckbox && syncIntervalGroup) {
+        autoSyncCheckbox.addEventListener('change', function() {
+            syncIntervalGroup.style.display = this.checked ? 'block' : 'none';
+        });
+    }
+});
+
+async function loadUrlLists() {
+    try {
+        const response = await fetch(`${API_BASE}/url-lists`, fetchOptions);
+        if (response.ok) {
+            const lists = await response.json();
+            const tbody = document.getElementById('url-lists-table');
+            
+            if (lists.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No URL lists configured</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = lists.map(list => {
+                const statusBadge = list.enabled 
+                    ? '<span class="badge bg-success">Enabled</span>'
+                    : '<span class="badge bg-secondary">Disabled</span>';
+                
+                const autoSyncBadge = list.auto_sync
+                    ? `<span class="badge bg-info">Every ${formatInterval(list.sync_interval)}</span>`
+                    : '<span class="badge bg-secondary">Manual</span>';
+                
+                const lastSync = list.last_sync 
+                    ? new Date(list.last_sync).toLocaleString()
+                    : 'Never';
+                
+                const urlDisplay = list.url.length > 50 
+                    ? list.url.substring(0, 50) + '...'
+                    : list.url;
+                
+                return `
+                    <tr>
+                        <td><strong>${list.name}</strong></td>
+                        <td><a href="${list.url}" target="_blank" title="${list.url}">${urlDisplay}</a></td>
+                        <td><span class="badge bg-${list.list_type === 'whitelist' ? 'success' : 'danger'}">${list.list_type}</span></td>
+                        <td>${statusBadge}</td>
+                        <td><strong>${list.entry_count || 0}</strong></td>
+                        <td><small>${lastSync}</small></td>
+                        <td>${autoSyncBadge}</td>
+                        <td>
+                            <button class="btn btn-sm btn-primary" onclick="syncUrlList(${list.id})" title="Sync Now">
+                                <i class="bi bi-arrow-clockwise"></i>
+                            </button>
+                            <button class="btn btn-sm btn-warning" onclick="toggleUrlList(${list.id}, ${!list.enabled})" title="${list.enabled ? 'Disable' : 'Enable'}">
+                                <i class="bi bi-${list.enabled ? 'pause' : 'play'}-fill"></i>
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteUrlList(${list.id})" title="Delete">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+    } catch (error) {
+        console.error('Error loading URL lists:', error);
+        document.getElementById('url-lists-table').innerHTML = 
+            '<tr><td colspan="8" class="text-center text-danger">Error loading URL lists</td></tr>';
+    }
+}
+
+async function addUrlList() {
+    const name = document.getElementById('url-list-name').value.trim();
+    const url = document.getElementById('url-list-url').value.trim();
+    const listType = document.getElementById('url-list-type').value;
+    const description = document.getElementById('url-list-desc').value.trim();
+    const enabled = document.getElementById('url-list-enabled').checked;
+    const autoSync = document.getElementById('url-list-auto-sync').checked;
+    const syncInterval = parseInt(document.getElementById('url-sync-interval').value) || 3600;
+    
+    if (!name || !url) {
+        showAlert('Name and URL are required', 'warning');
+        return;
+    }
+    
+    if (autoSync && syncInterval < 60) {
+        showAlert('Sync interval must be at least 60 seconds', 'warning');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/url-lists`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                url,
+                list_type: listType,
+                description,
+                enabled,
+                auto_sync: autoSync,
+                sync_interval: syncInterval
+            }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert('URL list added successfully. Syncing now...', 'success');
+            bootstrap.Modal.getInstance(document.getElementById('addUrlListModal')).hide();
+            document.getElementById('url-list-form').reset();
+            document.getElementById('url-sync-interval-group').style.display = 'none';
+            
+            // Auto-sync after adding
+            if (result.id) {
+                setTimeout(() => {
+                    syncUrlList(result.id);
+                    loadUrlLists();
+                }, 500);
+            }
+        } else {
+            showAlert(result.error || 'Error adding URL list', 'danger');
+        }
+    } catch (error) {
+        console.error('Error adding URL list:', error);
+        showAlert('Error adding URL list', 'danger');
+    }
+}
+
+async function syncUrlList(id) {
+    try {
+        const response = await fetch(`${API_BASE}/url-lists/${id}/sync`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert(`Sync completed: ${result.entries_added || 0} entries added`, 'success');
+            loadUrlLists();
+            refreshStats();
+            if (result.list_type === 'whitelist') loadWhitelist();
+            if (result.list_type === 'blacklist') loadBlacklist();
+        } else {
+            showAlert(result.error || 'Error syncing URL list', 'danger');
+        }
+    } catch (error) {
+        console.error('Error syncing URL list:', error);
+        showAlert('Error syncing URL list', 'danger');
+    }
+}
+
+async function toggleUrlList(id, enabled) {
+    try {
+        const response = await fetch(`${API_BASE}/url-lists/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert(`URL list ${enabled ? 'enabled' : 'disabled'}`, 'success');
+            loadUrlLists();
+        } else {
+            showAlert(result.error || 'Error updating URL list', 'danger');
+        }
+    } catch (error) {
+        console.error('Error toggling URL list:', error);
+        showAlert('Error updating URL list', 'danger');
+    }
+}
+
+async function deleteUrlList(id) {
+    if (!confirm('Are you sure you want to delete this URL list? This will not remove the imported IPs.')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/url-lists/${id}`, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert('URL list deleted successfully', 'success');
+            loadUrlLists();
+        } else {
+            showAlert(result.error || 'Error deleting URL list', 'danger');
+        }
+    } catch (error) {
+        console.error('Error deleting URL list:', error);
+        showAlert('Error deleting URL list', 'danger');
+    }
+}
+
+function formatInterval(seconds) {
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+    return `${Math.floor(seconds / 86400)}d`;
+}
+
+// AbuseIPDB Settings Functions
+async function loadAbuseIPDBSettings() {
+    try {
+        const response = await fetch(`${API_BASE}/abuseipdb/status`, fetchOptions);
+        if (response.ok) {
+            const status = await response.json();
+            
+            // Update form fields (don't show full API key for security)
+            const apiKeyInput = document.getElementById('abuseipdb-api-key');
+            if (apiKeyInput) {
+                if (status.api_key_configured) {
+                    apiKeyInput.placeholder = 'API key is configured (enter new key to change)';
+                    apiKeyInput.value = '';
+                } else {
+                    apiKeyInput.placeholder = 'Enter your AbuseIPDB API key';
+                }
+            }
+            
+            const modeSelect = document.getElementById('abuseipdb-mode');
+            if (modeSelect) {
+                modeSelect.value = status.mode || 'automatic';
+            }
+            
+            const enabledCheckbox = document.getElementById('abuseipdb-enabled');
+            if (enabledCheckbox) {
+                enabledCheckbox.checked = status.enabled || false;
+            }
+            
+            // Update status display
+            const statusDisplay = document.getElementById('abuseipdb-status-display');
+            if (statusDisplay) {
+                const statusBadge = status.enabled 
+                    ? '<span class="badge bg-success">Enabled</span>'
+                    : '<span class="badge bg-secondary">Disabled</span>';
+                
+                const apiKeyStatus = status.api_key_configured
+                    ? '<span class="badge bg-success">Configured</span>'
+                    : '<span class="badge bg-warning">Not Configured</span>';
+                
+                statusDisplay.innerHTML = `
+                    <div class="mb-2">
+                        <strong>Status:</strong> ${statusBadge}
+                    </div>
+                    <div class="mb-2">
+                        <strong>API Key:</strong> ${apiKeyStatus}
+                    </div>
+                    <div class="mb-2">
+                        <strong>Mode:</strong> <span class="badge bg-info">${status.mode || 'automatic'}</span>
+                    </div>
+                    <div class="mb-2">
+                        <strong>Queue Count:</strong> ${status.queue_count || 0} pending reports
+                    </div>
+                `;
+            }
+        }
+    } catch (error) {
+        console.error('Error loading AbuseIPDB settings:', error);
+    }
+}
+
+async function saveAbuseIPDBSettings() {
+    const apiKey = document.getElementById('abuseipdb-api-key').value.trim();
+    const mode = document.getElementById('abuseipdb-mode').value;
+    const enabled = document.getElementById('abuseipdb-enabled').checked;
+    
+    try {
+        const response = await fetch(`${API_BASE}/settings/abuseipdb`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                api_key: apiKey || null,
+                mode: mode,
+                enabled: enabled
+            }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert('AbuseIPDB settings saved successfully. Restart the server for changes to take full effect.', 'success');
+            loadAbuseIPDBSettings();
+        } else {
+            showAlert(result.error || 'Error saving AbuseIPDB settings', 'danger');
+        }
+    } catch (error) {
+        console.error('Error saving AbuseIPDB settings:', error);
+        showAlert('Error saving AbuseIPDB settings', 'danger');
+    }
+}
+
+async function testAbuseIPDBConnection() {
+    try {
+        const response = await fetch(`${API_BASE}/abuseipdb/status`, fetchOptions);
+        if (response.ok) {
+            const status = await response.json();
+            if (status.enabled && status.api_key_configured) {
+                showAlert('AbuseIPDB connection test successful', 'success');
+            } else {
+                showAlert('AbuseIPDB is not configured. Please enter an API key.', 'warning');
+            }
+        } else {
+            showAlert('Error testing AbuseIPDB connection', 'danger');
+        }
+    } catch (error) {
+        console.error('Error testing AbuseIPDB connection:', error);
+        showAlert('Error testing AbuseIPDB connection', 'danger');
+    }
+}
+
+function toggleApiKeyVisibility() {
+    const apiKeyInput = document.getElementById('abuseipdb-api-key');
+    const eyeIcon = document.getElementById('api-key-eye-icon');
+    
+    if (apiKeyInput.type === 'password') {
+        apiKeyInput.type = 'text';
+        eyeIcon.className = 'bi bi-eye-slash';
+    } else {
+        apiKeyInput.type = 'password';
+        eyeIcon.className = 'bi bi-eye';
+    }
+}
+
+// System Settings Functions
+async function loadSystemSettings() {
+    try {
+        const response = await fetch(`${API_BASE}/settings`, fetchOptions);
+        if (response.ok) {
+            const settings = await response.json();
+            
+            // Server settings
+            if (settings.server) {
+                document.getElementById('server-host').value = settings.server.host || '';
+                document.getElementById('server-port').value = settings.server.port || '';
+                document.getElementById('secret-key').value = settings.server.secret_key || '';
+            }
+            
+            // Database settings
+            if (settings.database) {
+                document.getElementById('db-host').value = settings.database.host || '';
+                document.getElementById('db-name').value = settings.database.name || '';
+                document.getElementById('db-user').value = settings.database.user || '';
+                // Don't load password for security
+            }
+            
+            // OIDC settings
+            if (settings.oidc) {
+                document.getElementById('oidc-issuer').value = settings.oidc.issuer || '';
+                document.getElementById('oidc-client-id').value = settings.oidc.client_id || '';
+                document.getElementById('oidc-client-secret').value = settings.oidc.client_secret || '';
+                document.getElementById('oidc-redirect-uri').value = settings.oidc.redirect_uri || '';
+                document.getElementById('oidc-post-logout-uri').value = settings.oidc.post_logout_uri || '';
+            }
+            
+            // Monitoring settings
+            if (settings.monitoring) {
+                document.getElementById('enable-log-monitoring').checked = settings.monitoring.enabled || false;
+                document.getElementById('monitor-services').value = settings.monitoring.services || '';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading system settings:', error);
+    }
+}
+
+async function saveServerSettings() {
+    const host = document.getElementById('server-host').value.trim();
+    const port = document.getElementById('server-port').value.trim();
+    const secretKey = document.getElementById('secret-key').value.trim();
+    
+    try {
+        const response = await fetch(`${API_BASE}/settings/server`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                host: host,
+                port: port,
+                secret_key: secretKey || null
+            }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert('Server settings saved. Restart the server for changes to take effect.', 'success');
+        } else {
+            showAlert(result.error || 'Error saving server settings', 'danger');
+        }
+    } catch (error) {
+        console.error('Error saving server settings:', error);
+        showAlert('Error saving server settings', 'danger');
+    }
+}
+
+async function saveDatabaseSettings() {
+    const host = document.getElementById('db-host').value.trim();
+    const name = document.getElementById('db-name').value.trim();
+    const user = document.getElementById('db-user').value.trim();
+    const password = document.getElementById('db-password').value.trim();
+    
+    try {
+        const response = await fetch(`${API_BASE}/settings/database`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                host: host,
+                name: name,
+                user: user,
+                password: password || null
+            }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert('Database settings saved. Restart the server for changes to take effect.', 'success');
+            document.getElementById('db-password').value = '';
+        } else {
+            showAlert(result.error || 'Error saving database settings', 'danger');
+        }
+    } catch (error) {
+        console.error('Error saving database settings:', error);
+        showAlert('Error saving database settings', 'danger');
+    }
+}
+
+async function testDatabaseConnection() {
+    const host = document.getElementById('db-host').value.trim();
+    const name = document.getElementById('db-name').value.trim();
+    const user = document.getElementById('db-user').value.trim();
+    const password = document.getElementById('db-password').value.trim();
+    
+    try {
+        const response = await fetch(`${API_BASE}/settings/database/test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                host: host,
+                name: name,
+                user: user,
+                password: password || null
+            }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok && result.success) {
+            showAlert('Database connection test successful', 'success');
+        } else {
+            showAlert(result.error || 'Database connection test failed', 'danger');
+        }
+    } catch (error) {
+        console.error('Error testing database connection:', error);
+        showAlert('Error testing database connection', 'danger');
+    }
+}
+
+async function saveOIDCSettings() {
+    const issuer = document.getElementById('oidc-issuer').value.trim();
+    const clientId = document.getElementById('oidc-client-id').value.trim();
+    const clientSecret = document.getElementById('oidc-client-secret').value.trim();
+    const redirectUri = document.getElementById('oidc-redirect-uri').value.trim();
+    const postLogoutUri = document.getElementById('oidc-post-logout-uri').value.trim();
+    
+    try {
+        const response = await fetch(`${API_BASE}/settings/oidc`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                issuer: issuer,
+                client_id: clientId,
+                client_secret: clientSecret || null,
+                redirect_uri: redirectUri,
+                post_logout_uri: postLogoutUri
+            }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert('OIDC settings saved. Restart the server for changes to take effect.', 'success');
+        } else {
+            showAlert(result.error || 'Error saving OIDC settings', 'danger');
+        }
+    } catch (error) {
+        console.error('Error saving OIDC settings:', error);
+        showAlert('Error saving OIDC settings', 'danger');
+    }
+}
+
+async function saveMonitoringSettings() {
+    const enabled = document.getElementById('enable-log-monitoring').checked;
+    const services = document.getElementById('monitor-services').value.trim();
+    
+    try {
+        const response = await fetch(`${API_BASE}/settings/monitoring`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                enabled: enabled,
+                services: services
+            }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert('Monitoring settings saved. Restart the server for changes to take effect.', 'success');
+        } else {
+            showAlert(result.error || 'Error saving monitoring settings', 'danger');
+        }
+    } catch (error) {
+        console.error('Error saving monitoring settings:', error);
+        showAlert('Error saving monitoring settings', 'danger');
+    }
+}
+
 // Tab Navigation
 document.addEventListener('DOMContentLoaded', function() {
     console.log('=== bWall Dashboard Initialization ===');
@@ -628,6 +1150,18 @@ function switchTab(tabName) {
             case 'reports':
                 console.log('Loading reports data...');
                 loadReports();
+                break;
+            case 'url-lists':
+                console.log('Loading URL lists data...');
+                loadUrlLists();
+                break;
+            case 'abuseipdb-settings':
+                console.log('Loading AbuseIPDB settings...');
+                loadAbuseIPDBSettings();
+                break;
+            case 'settings':
+                console.log('Loading system settings...');
+                loadSystemSettings();
                 break;
             default:
                 console.warn('Unknown tab:', tabName);

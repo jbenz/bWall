@@ -409,6 +409,27 @@ CREATE TABLE IF NOT EXISTS abuseipdb_queue (
     INDEX idx_ip (ip_address),
     INDEX idx_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- URL-based IP lists table
+CREATE TABLE IF NOT EXISTS url_lists (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    url TEXT NOT NULL,
+    list_type VARCHAR(20) NOT NULL,
+    enabled BOOLEAN DEFAULT TRUE,
+    auto_sync BOOLEAN DEFAULT FALSE,
+    sync_interval INT DEFAULT 3600,
+    last_sync TIMESTAMP NULL,
+    last_success TIMESTAMP NULL,
+    last_error TEXT,
+    entry_count INT DEFAULT 0,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_type (list_type),
+    INDEX idx_enabled (enabled),
+    INDEX idx_last_sync (last_sync)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 EOF
 
 if [ $? -eq 0 ]; then

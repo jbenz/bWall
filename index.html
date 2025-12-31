@@ -105,6 +105,21 @@
                             <i class="bi bi-graph-up me-2"></i>Reports
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-tab="url-lists">
+                            <i class="bi bi-link-45deg me-2"></i>URL Lists
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-tab="abuseipdb-settings">
+                            <i class="bi bi-shield-check me-2"></i>AbuseIPDB
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-tab="settings">
+                            <i class="bi bi-gear me-2"></i>Settings
+                        </a>
+                    </li>
                 </ul>
             </nav>
 
@@ -903,6 +918,297 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- URL Lists Tab -->
+                <div id="url-lists-tab" class="tab-content" style="display: none;">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2 class="mb-0">URL-Based IP Lists</h2>
+                        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addUrlListModal">
+                            <i class="bi bi-plus-circle me-2"></i>Add URL List
+                        </button>
+                    </div>
+
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <strong>URL Lists:</strong> Import and synchronize IP addresses from remote URLs. 
+                        Lists should contain one IP address or CIDR subnet per line.
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">Configured URL Lists</h5>
+                            <button class="btn btn-sm btn-outline-primary" onclick="loadUrlLists()">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>URL</th>
+                                            <th>Type</th>
+                                            <th>Status</th>
+                                            <th>Entries</th>
+                                            <th>Last Sync</th>
+                                            <th>Auto Sync</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="url-lists-table">
+                                        <tr>
+                                            <td colspan="8" class="text-center text-muted">Loading...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AbuseIPDB Settings Tab -->
+                <div id="abuseipdb-settings-tab" class="tab-content" style="display: none;">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2 class="mb-0">AbuseIPDB Configuration</h2>
+                    </div>
+
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <strong>AbuseIPDB Integration:</strong> Configure your AbuseIPDB API key and reporting settings.
+                        Get your API key from <a href="https://www.abuseipdb.com/pricing" target="_blank">AbuseIPDB.com</a>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-8">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h5 class="mb-0">API Configuration</h5>
+                                </div>
+                                <div class="card-body">
+                                    <form id="abuseipdb-form">
+                                        <div class="mb-3">
+                                            <label class="form-label">API Key</label>
+                                            <div class="input-group">
+                                                <input type="password" class="form-control" id="abuseipdb-api-key" placeholder="Enter your AbuseIPDB API key">
+                                                <button class="btn btn-outline-secondary" type="button" onclick="toggleApiKeyVisibility()">
+                                                    <i class="bi bi-eye" id="api-key-eye-icon"></i>
+                                                </button>
+                                            </div>
+                                            <small class="form-text text-muted">Your API key is stored securely and never displayed in full</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Reporting Mode</label>
+                                            <select class="form-select" id="abuseipdb-mode">
+                                                <option value="automatic">Automatic - Report immediately when IPs are blocked</option>
+                                                <option value="log_and_hold">Log and Hold - Queue reports for review before submitting</option>
+                                                <option value="log_only">Log Only - Only log events, do not report</option>
+                                            </select>
+                                            <small class="form-text text-muted">
+                                                <strong>Automatic:</strong> Reports are sent immediately<br>
+                                                <strong>Log and Hold:</strong> Reports are queued for manual review in the Blacklist tab<br>
+                                                <strong>Log Only:</strong> Events are logged but not reported to AbuseIPDB
+                                            </small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="abuseipdb-enabled">
+                                                <label class="form-check-label" for="abuseipdb-enabled">
+                                                    Enable AbuseIPDB Integration
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <button type="button" class="btn btn-primary" onclick="saveAbuseIPDBSettings()">
+                                            <i class="bi bi-save me-2"></i>Save Settings
+                                        </button>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="testAbuseIPDBConnection()">
+                                            <i class="bi bi-check-circle me-2"></i>Test Connection
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+
+                            <div class="card mt-4">
+                                <div class="card-header">
+                                    <h5 class="mb-0">Status</h5>
+                                </div>
+                                <div class="card-body">
+                                    <div id="abuseipdb-status-display">
+                                        <div class="text-center text-muted">Loading status...</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h5 class="mb-0">Information</h5>
+                                </div>
+                                <div class="card-body">
+                                    <h6>AbuseIPDB Categories</h6>
+                                    <small class="text-muted">
+                                        <strong>3:</strong> Fraud Orders<br>
+                                        <strong>4:</strong> DDoS Attack<br>
+                                        <strong>14:</strong> Brute Force<br>
+                                        <strong>15:</strong> Bad Web Bot<br>
+                                        <strong>18:</strong> Web App Attack<br>
+                                        <strong>19:</strong> SSH<br>
+                                        <strong>20:</strong> Hacking<br>
+                                        <strong>21:</strong> Spam<br>
+                                        <strong>22:</strong> Phishing<br>
+                                        <strong>23:</strong> Malware<br>
+                                        <strong>24:</strong> Port Scan<br>
+                                        <strong>99:</strong> Other
+                                    </small>
+                                    <hr>
+                                    <h6>API Limits</h6>
+                                    <small class="text-muted">
+                                        Free tier: 1,000 requests/day<br>
+                                        Paid tiers: Higher limits available<br>
+                                        Check your plan at abuseipdb.com
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Settings Tab -->
+                <div id="settings-tab" class="tab-content" style="display: none;">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2 class="mb-0">System Settings</h2>
+                    </div>
+
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        <strong>Warning:</strong> Changes to these settings may require a server restart to take effect.
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="card mb-4">
+                                <div class="card-header">
+                                    <h5 class="mb-0">Server Configuration</h5>
+                                </div>
+                                <div class="card-body">
+                                    <form id="server-settings-form">
+                                        <div class="mb-3">
+                                            <label class="form-label">Server Host</label>
+                                            <input type="text" class="form-control" id="server-host" placeholder="0.0.0.0">
+                                            <small class="form-text text-muted">IP address or hostname to bind the server to (0.0.0.0 for all interfaces)</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Server Port</label>
+                                            <input type="number" class="form-control" id="server-port" placeholder="5000" min="1" max="65535">
+                                            <small class="form-text text-muted">Port number for the web interface</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Secret Key</label>
+                                            <input type="password" class="form-control" id="secret-key" placeholder="Change this in production">
+                                            <small class="form-text text-muted">Flask secret key for session management</small>
+                                        </div>
+                                        <button type="button" class="btn btn-primary" onclick="saveServerSettings()">
+                                            <i class="bi bi-save me-2"></i>Save Server Settings
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+
+                            <div class="card mb-4">
+                                <div class="card-header">
+                                    <h5 class="mb-0">Database Configuration</h5>
+                                </div>
+                                <div class="card-body">
+                                    <form id="database-settings-form">
+                                        <div class="mb-3">
+                                            <label class="form-label">Database Host</label>
+                                            <input type="text" class="form-control" id="db-host" placeholder="localhost">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Database Name</label>
+                                            <input type="text" class="form-control" id="db-name" placeholder="iptables_db">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Database User</label>
+                                            <input type="text" class="form-control" id="db-user" placeholder="iptables_user">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Database Password</label>
+                                            <input type="password" class="form-control" id="db-password" placeholder="Enter password">
+                                        </div>
+                                        <button type="button" class="btn btn-primary" onclick="saveDatabaseSettings()">
+                                            <i class="bi bi-save me-2"></i>Save Database Settings
+                                        </button>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="testDatabaseConnection()">
+                                            <i class="bi bi-check-circle me-2"></i>Test Connection
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <div class="card mb-4">
+                                <div class="card-header">
+                                    <h5 class="mb-0">OIDC/PocketID Configuration</h5>
+                                </div>
+                                <div class="card-body">
+                                    <form id="oidc-settings-form">
+                                        <div class="mb-3">
+                                            <label class="form-label">OIDC Issuer URL</label>
+                                            <input type="url" class="form-control" id="oidc-issuer" placeholder="https://your-pocketid-instance.example.com">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Client ID</label>
+                                            <input type="text" class="form-control" id="oidc-client-id" placeholder="Your OIDC client ID">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Client Secret</label>
+                                            <input type="password" class="form-control" id="oidc-client-secret" placeholder="Your OIDC client secret">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Redirect URI</label>
+                                            <input type="url" class="form-control" id="oidc-redirect-uri" placeholder="http://localhost:5000/oidc_callback">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Post-Logout Redirect URI</label>
+                                            <input type="url" class="form-control" id="oidc-post-logout-uri" placeholder="http://localhost:5000/">
+                                        </div>
+                                        <button type="button" class="btn btn-primary" onclick="saveOIDCSettings()">
+                                            <i class="bi bi-save me-2"></i>Save OIDC Settings
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+
+                            <div class="card mb-4">
+                                <div class="card-header">
+                                    <h5 class="mb-0">Monitoring Configuration</h5>
+                                </div>
+                                <div class="card-body">
+                                    <form id="monitoring-settings-form">
+                                        <div class="mb-3">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="enable-log-monitoring">
+                                                <label class="form-check-label" for="enable-log-monitoring">
+                                                    Enable Log Monitoring
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Monitor Services (comma-separated)</label>
+                                            <input type="text" class="form-control" id="monitor-services" placeholder="ssh,apache,nginx,xrdp">
+                                            <small class="form-text text-muted">Leave empty to monitor all configured services</small>
+                                        </div>
+                                        <button type="button" class="btn btn-primary" onclick="saveMonitoringSettings()">
+                                            <i class="bi bi-save me-2"></i>Save Monitoring Settings
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 
                 <!-- Footer -->
                 <footer class="text-center text-muted py-3 mt-4" style="border-top: 1px solid #dee2e6;">
@@ -1018,6 +1324,67 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-danger" onclick="addBlacklistEntry()">Add Entry</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add URL List Modal -->
+    <div class="modal fade" id="addUrlListModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Add URL-Based IP List</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="url-list-form">
+                        <div class="mb-3">
+                            <label class="form-label">List Name</label>
+                            <input type="text" class="form-control" id="url-list-name" placeholder="e.g., Spamhaus DROP List" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">URL</label>
+                            <input type="url" class="form-control" id="url-list-url" placeholder="https://example.com/blocklist.txt" required>
+                            <small class="form-text text-muted">URL should return a text file with one IP or CIDR per line</small>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">List Type</label>
+                            <select class="form-select" id="url-list-type" required>
+                                <option value="whitelist">Whitelist</option>
+                                <option value="blacklist" selected>Blacklist</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Description</label>
+                            <textarea class="form-control" id="url-list-desc" rows="2" placeholder="Optional description"></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="url-list-enabled" checked>
+                                <label class="form-check-label" for="url-list-enabled">
+                                    Enabled
+                                </label>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="url-list-auto-sync">
+                                <label class="form-check-label" for="url-list-auto-sync">
+                                    Auto-sync (periodically update from URL)
+                                </label>
+                            </div>
+                        </div>
+                        <div class="mb-3" id="url-sync-interval-group" style="display: none;">
+                            <label class="form-label">Sync Interval (seconds)</label>
+                            <input type="number" class="form-control" id="url-sync-interval" value="3600" min="60">
+                            <small class="form-text text-muted">Minimum: 60 seconds (1 minute)</small>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="addUrlList()">Add List</button>
                 </div>
             </div>
         </div>

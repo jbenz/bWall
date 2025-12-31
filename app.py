@@ -11,6 +11,9 @@ import subprocess
 import json
 import csv
 import ipaddress
+import requests
+import threading
+import time
 from datetime import datetime
 from flask import Flask, request, jsonify, send_file, session, redirect, url_for
 from flask_cors import CORS
@@ -336,6 +339,29 @@ def init_database():
                     INDEX idx_status (status),
                     INDEX idx_ip (ip_address),
                     INDEX idx_created (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+            
+            # URL-based IP lists table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS url_lists (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    url TEXT NOT NULL,
+                    list_type VARCHAR(20) NOT NULL,
+                    enabled BOOLEAN DEFAULT TRUE,
+                    auto_sync BOOLEAN DEFAULT FALSE,
+                    sync_interval INT DEFAULT 3600,
+                    last_sync TIMESTAMP NULL,
+                    last_success TIMESTAMP NULL,
+                    last_error TEXT,
+                    entry_count INT DEFAULT 0,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_type (list_type),
+                    INDEX idx_enabled (enabled),
+                    INDEX idx_last_sync (last_sync)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
             
@@ -2070,6 +2096,7 @@ def reports_block_summary():
                     CASE 
                         WHEN description LIKE 'Auto-blocked:%' THEN 'Auto-Monitoring'
                         WHEN description LIKE 'Manually blocked%' THEN 'Manual'
+                        WHEN description LIKE 'Imported from URL:%' THEN 'URL List'
                         ELSE 'Other'
                     END as source,
                     COUNT(*) as count
@@ -2097,6 +2124,811 @@ def reports_block_summary():
         return jsonify({'error': str(e)}), 500
     finally:
         conn.close()
+
+# URL Lists API Endpoints
+@app.route('/api/url-lists', methods=['GET'])
+@require_auth
+def get_url_lists():
+    """Get all URL-based IP lists"""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify([])
+    
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("SELECT * FROM url_lists ORDER BY created_at DESC")
+            lists = cursor.fetchall()
+            
+            for list_item in lists:
+                if list_item.get('last_sync'):
+                    list_item['last_sync'] = list_item['last_sync'].isoformat()
+                if list_item.get('last_success'):
+                    list_item['last_success'] = list_item['last_success'].isoformat()
+                if list_item.get('created_at'):
+                    list_item['created_at'] = list_item['created_at'].isoformat()
+                if list_item.get('updated_at'):
+                    list_item['updated_at'] = list_item['updated_at'].isoformat()
+            
+            return jsonify(lists)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/url-lists', methods=['POST'])
+@require_auth
+def add_url_list():
+    """Add a new URL-based IP list"""
+    data = request.json
+    name = data.get('name', '').strip()
+    url = data.get('url', '').strip()
+    list_type = data.get('list_type', 'blacklist')
+    description = data.get('description', '').strip()
+    enabled = data.get('enabled', True)
+    auto_sync = data.get('auto_sync', False)
+    sync_interval = data.get('sync_interval', 3600)
+    
+    if not name or not url:
+        return jsonify({'error': 'Name and URL are required'}), 400
+    
+    if list_type not in ['whitelist', 'blacklist']:
+        return jsonify({'error': 'Invalid list type. Must be whitelist or blacklist'}), 400
+    
+    if auto_sync and sync_interval < 60:
+        return jsonify({'error': 'Sync interval must be at least 60 seconds'}), 400
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO url_lists (name, url, list_type, description, enabled, auto_sync, sync_interval)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (name, url, list_type, description, enabled, auto_sync, sync_interval))
+        conn.commit()
+        
+        list_id = cursor.lastrowid
+        log_activity('add_url_list', 'url_list', name, 'success')
+        
+        return jsonify({
+            'message': 'URL list added successfully',
+            'id': list_id
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/url-lists/<int:list_id>', methods=['PATCH'])
+@require_auth
+def update_url_list(list_id):
+    """Update URL list settings"""
+    data = request.json
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        updates = []
+        values = []
+        
+        if 'enabled' in data:
+            updates.append("enabled = %s")
+            values.append(data['enabled'])
+        
+        if 'auto_sync' in data:
+            updates.append("auto_sync = %s")
+            values.append(data['auto_sync'])
+        
+        if 'sync_interval' in data:
+            updates.append("sync_interval = %s")
+            values.append(data['sync_interval'])
+        
+        if 'name' in data:
+            updates.append("name = %s")
+            values.append(data['name'])
+        
+        if 'description' in data:
+            updates.append("description = %s")
+            values.append(data['description'])
+        
+        if not updates:
+            return jsonify({'error': 'No fields to update'}), 400
+        
+        values.append(list_id)
+        query = f"UPDATE url_lists SET {', '.join(updates)} WHERE id = %s"
+        
+        with conn.cursor() as cursor:
+            cursor.execute(query, values)
+        conn.commit()
+        
+        log_activity('update_url_list', 'url_list', str(list_id), 'success')
+        
+        return jsonify({'message': 'URL list updated successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/url-lists/<int:list_id>', methods=['DELETE'])
+@require_auth
+def delete_url_list(list_id):
+    """Delete a URL list"""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM url_lists WHERE id = %s", (list_id,))
+        conn.commit()
+        
+        log_activity('delete_url_list', 'url_list', str(list_id), 'success')
+        
+        return jsonify({'message': 'URL list deleted successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/url-lists/<int:list_id>/sync', methods=['POST'])
+@require_auth
+def sync_url_list(list_id):
+    """Sync IP addresses from URL"""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        # Get URL list configuration
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("SELECT * FROM url_lists WHERE id = %s", (list_id,))
+            url_list = cursor.fetchone()
+            
+            if not url_list:
+                return jsonify({'error': 'URL list not found'}), 404
+            
+            if not url_list['enabled']:
+                return jsonify({'error': 'URL list is disabled'}), 400
+        
+        # Fetch IP list from URL
+        try:
+            response = requests.get(url_list['url'], timeout=30, headers={
+                'User-Agent': 'bWall/1.0'
+            })
+            response.raise_for_status()
+            content = response.text
+        except requests.RequestException as e:
+            error_msg = f"Failed to fetch URL: {str(e)}"
+            # Update last_error
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE url_lists 
+                    SET last_error = %s, last_sync = NOW()
+                    WHERE id = %s
+                """, (error_msg, list_id))
+            conn.commit()
+            return jsonify({'error': error_msg}), 500
+        
+        # Parse IP addresses (one per line)
+        ip_addresses = []
+        for line in content.split('\n'):
+            line = line.strip()
+            # Skip empty lines and comments
+            if not line or line.startswith('#') or line.startswith('//'):
+                continue
+            
+            # Remove any trailing comments
+            if '#' in line:
+                line = line.split('#')[0].strip()
+            if '//' in line:
+                line = line.split('//')[0].strip()
+            
+            # Validate IP or CIDR
+            if validate_ip(line):
+                ip_addresses.append(line)
+        
+        if not ip_addresses:
+            return jsonify({'error': 'No valid IP addresses found in URL'}), 400
+        
+        # Add IPs to appropriate list
+        entries_added = 0
+        entries_skipped = 0
+        list_type = url_list['list_type']
+        description = f"Imported from URL: {url_list['name']}"
+        
+        with conn.cursor() as cursor:
+            for ip in ip_addresses:
+                try:
+                    if list_type == 'whitelist':
+                        cursor.execute("""
+                            INSERT INTO whitelist (ip_address, description)
+                            VALUES (%s, %s)
+                            ON DUPLICATE KEY UPDATE description = %s
+                        """, (ip, description, description))
+                    else:  # blacklist
+                        cursor.execute("""
+                            INSERT INTO blacklist (ip_address, description)
+                            VALUES (%s, %s)
+                            ON DUPLICATE KEY UPDATE description = %s
+                        """, (ip, description, description))
+                    
+                    if cursor.rowcount > 0:
+                        entries_added += 1
+                        # Apply iptables rule
+                        if list_type == 'whitelist':
+                            apply_whitelist_rule(ip)
+                        else:
+                            apply_blacklist_rule(ip)
+                    else:
+                        entries_skipped += 1
+                except Exception as e:
+                    print(f"[URL-LIST] Error adding IP {ip}: {e}")
+                    entries_skipped += 1
+        
+        conn.commit()
+        
+        # Update URL list stats
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE url_lists 
+                SET entry_count = %s, last_sync = NOW(), last_success = NOW(), last_error = NULL
+                WHERE id = %s
+            """, (entries_added, list_id))
+        conn.commit()
+        
+        log_activity('sync_url_list', 'url_list', url_list['name'], 'success')
+        
+        return jsonify({
+            'message': f'Sync completed: {entries_added} entries added, {entries_skipped} skipped',
+            'entries_added': entries_added,
+            'entries_skipped': entries_skipped,
+            'list_type': list_type
+        })
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Update last_error
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE url_lists 
+                    SET last_error = %s, last_sync = NOW()
+                    WHERE id = %s
+                """, (str(e), list_id))
+            conn.commit()
+        except:
+            pass
+        
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+# Settings API Endpoints
+@app.route('/api/settings', methods=['GET'])
+@require_auth
+def get_settings():
+    """Get all system settings"""
+    try:
+        settings = {
+            'server': {
+                'host': os.getenv('APP_HOST', '0.0.0.0'),
+                'port': os.getenv('APP_PORT', '5000'),
+                'secret_key': '***' if os.getenv('SECRET_KEY') else ''
+            },
+            'database': {
+                'host': os.getenv('DB_HOST', 'localhost'),
+                'name': os.getenv('DB_NAME', 'iptables_db'),
+                'user': os.getenv('DB_USER', 'iptables_user')
+            },
+            'oidc': {
+                'issuer': os.getenv('OIDC_ISSUER', ''),
+                'client_id': os.getenv('OIDC_CLIENT_ID', ''),
+                'client_secret': '***' if os.getenv('OIDC_CLIENT_SECRET') else '',
+                'redirect_uri': os.getenv('OIDC_REDIRECT_URI', ''),
+                'post_logout_uri': os.getenv('OIDC_POST_LOGOUT_URI', '')
+            },
+            'monitoring': {
+                'enabled': os.getenv('ENABLE_LOG_MONITORING', 'true').lower() == 'true',
+                'services': os.getenv('MONITOR_SERVICES', '')
+            }
+        }
+        return jsonify(settings)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/settings/abuseipdb', methods=['POST'])
+@require_auth
+def update_abuseipdb_settings():
+    """Update AbuseIPDB settings"""
+    data = request.json
+    api_key = data.get('api_key')
+    mode = data.get('mode', 'automatic')
+    enabled = data.get('enabled', True)
+    
+    if mode not in ['log_only', 'log_and_hold', 'automatic']:
+        return jsonify({'error': 'Invalid mode'}), 400
+    
+    try:
+        # Update .env file
+        env_file = '.env'
+        env_lines = []
+        
+        if os.path.exists(env_file):
+            with open(env_file, 'r') as f:
+                env_lines = f.readlines()
+        
+        # Update or add settings
+        updated = {
+            'ABUSEIPDB_API_KEY': api_key if api_key else None,
+            'ABUSEIPDB_MODE': mode
+        }
+        
+        # Process existing lines
+        new_lines = []
+        keys_to_add = set(updated.keys())
+        
+        for line in env_lines:
+            line_stripped = line.strip()
+            if not line_stripped or line_stripped.startswith('#'):
+                new_lines.append(line)
+                continue
+            
+            if '=' in line_stripped:
+                key = line_stripped.split('=', 1)[0].strip()
+                if key in updated:
+                    keys_to_add.discard(key)
+                    if updated[key] is not None:
+                        new_lines.append(f"{key}={updated[key]}\n")
+                    # Skip line if value is None (remove setting)
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+        
+        # Add new settings
+        for key in keys_to_add:
+            if updated[key] is not None:
+                new_lines.append(f"{key}={updated[key]}\n")
+        
+        # Write back to file
+        with open(env_file, 'w') as f:
+            f.writelines(new_lines)
+        
+        # Update runtime variables
+        if api_key:
+            os.environ['ABUSEIPDB_API_KEY'] = api_key
+            global abuseipdb
+            abuseipdb = AbuseIPDB(api_key=api_key)
+        else:
+            if 'ABUSEIPDB_API_KEY' in os.environ:
+                del os.environ['ABUSEIPDB_API_KEY']
+            abuseipdb = AbuseIPDB()
+        
+        global ABUSEIPDB_MODE
+        ABUSEIPDB_MODE = mode
+        os.environ['ABUSEIPDB_MODE'] = mode
+        
+        log_activity('update_settings', 'abuseipdb', 'AbuseIPDB settings updated', 'success')
+        
+        return jsonify({
+            'message': 'AbuseIPDB settings updated successfully',
+            'enabled': abuseipdb.enabled,
+            'mode': mode
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/settings/server', methods=['POST'])
+@require_auth
+def update_server_settings():
+    """Update server settings"""
+    data = request.json
+    host = data.get('host')
+    port = data.get('port')
+    secret_key = data.get('secret_key')
+    
+    try:
+        env_file = '.env'
+        env_lines = []
+        
+        if os.path.exists(env_file):
+            with open(env_file, 'r') as f:
+                env_lines = f.readlines()
+        
+        updated = {}
+        if host:
+            updated['APP_HOST'] = host
+        if port:
+            updated['APP_PORT'] = port
+        if secret_key:
+            updated['SECRET_KEY'] = secret_key
+        
+        new_lines = []
+        keys_to_add = set(updated.keys())
+        
+        for line in env_lines:
+            line_stripped = line.strip()
+            if not line_stripped or line_stripped.startswith('#'):
+                new_lines.append(line)
+                continue
+            
+            if '=' in line_stripped:
+                key = line_stripped.split('=', 1)[0].strip()
+                if key in updated:
+                    keys_to_add.discard(key)
+                    new_lines.append(f"{key}={updated[key]}\n")
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+        
+        for key in keys_to_add:
+            new_lines.append(f"{key}={updated[key]}\n")
+        
+        with open(env_file, 'w') as f:
+            f.writelines(new_lines)
+        
+        # Update runtime variables
+        if host:
+            os.environ['APP_HOST'] = host
+        if port:
+            os.environ['APP_PORT'] = port
+        if secret_key:
+            os.environ['SECRET_KEY'] = secret_key
+            app.config['SECRET_KEY'] = secret_key
+        
+        log_activity('update_settings', 'server', 'Server settings updated', 'success')
+        
+        return jsonify({'message': 'Server settings updated successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/settings/database', methods=['POST'])
+@require_auth
+def update_database_settings():
+    """Update database settings"""
+    data = request.json
+    host = data.get('host')
+    name = data.get('name')
+    user = data.get('user')
+    password = data.get('password')
+    
+    try:
+        env_file = '.env'
+        env_lines = []
+        
+        if os.path.exists(env_file):
+            with open(env_file, 'r') as f:
+                env_lines = f.readlines()
+        
+        updated = {}
+        if host:
+            updated['DB_HOST'] = host
+        if name:
+            updated['DB_NAME'] = name
+        if user:
+            updated['DB_USER'] = user
+        if password:
+            updated['DB_PASSWORD'] = password
+        
+        new_lines = []
+        keys_to_add = set(updated.keys())
+        
+        for line in env_lines:
+            line_stripped = line.strip()
+            if not line_stripped or line_stripped.startswith('#'):
+                new_lines.append(line)
+                continue
+            
+            if '=' in line_stripped:
+                key = line_stripped.split('=', 1)[0].strip()
+                if key in updated:
+                    keys_to_add.discard(key)
+                    new_lines.append(f"{key}={updated[key]}\n")
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+        
+        for key in keys_to_add:
+            new_lines.append(f"{key}={updated[key]}\n")
+        
+        with open(env_file, 'w') as f:
+            f.writelines(new_lines)
+        
+        # Update runtime variables and DB_CONFIG
+        if host:
+            os.environ['DB_HOST'] = host
+            DB_CONFIG['host'] = host
+        if name:
+            os.environ['DB_NAME'] = name
+            DB_CONFIG['database'] = name
+        if user:
+            os.environ['DB_USER'] = user
+            DB_CONFIG['user'] = user
+        if password:
+            os.environ['DB_PASSWORD'] = password
+            DB_CONFIG['password'] = password
+        
+        log_activity('update_settings', 'database', 'Database settings updated', 'success')
+        
+        return jsonify({'message': 'Database settings updated successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/settings/database/test', methods=['POST'])
+@require_auth
+def test_database_settings():
+    """Test database connection with provided settings"""
+    data = request.json
+    host = data.get('host', 'localhost')
+    name = data.get('name', 'iptables_db')
+    user = data.get('user', 'iptables_user')
+    password = data.get('password', '')
+    
+    try:
+        test_config = {
+            'host': host,
+            'user': user,
+            'password': password,
+            'database': name,
+            'charset': 'utf8mb4'
+        }
+        
+        conn = pymysql.connect(**test_config)
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'Database connection successful'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+@app.route('/api/settings/oidc', methods=['POST'])
+@require_auth
+def update_oidc_settings():
+    """Update OIDC settings"""
+    data = request.json
+    issuer = data.get('issuer')
+    client_id = data.get('client_id')
+    client_secret = data.get('client_secret')
+    redirect_uri = data.get('redirect_uri')
+    post_logout_uri = data.get('post_logout_uri')
+    
+    try:
+        env_file = '.env'
+        env_lines = []
+        
+        if os.path.exists(env_file):
+            with open(env_file, 'r') as f:
+                env_lines = f.readlines()
+        
+        updated = {}
+        if issuer:
+            updated['OIDC_ISSUER'] = issuer
+        if client_id:
+            updated['OIDC_CLIENT_ID'] = client_id
+        if client_secret:
+            updated['OIDC_CLIENT_SECRET'] = client_secret
+        if redirect_uri:
+            updated['OIDC_REDIRECT_URI'] = redirect_uri
+        if post_logout_uri:
+            updated['OIDC_POST_LOGOUT_URI'] = post_logout_uri
+        
+        new_lines = []
+        keys_to_add = set(updated.keys())
+        
+        for line in env_lines:
+            line_stripped = line.strip()
+            if not line_stripped or line_stripped.startswith('#'):
+                new_lines.append(line)
+                continue
+            
+            if '=' in line_stripped:
+                key = line_stripped.split('=', 1)[0].strip()
+                if key in updated:
+                    keys_to_add.discard(key)
+                    new_lines.append(f"{key}={updated[key]}\n")
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+        
+        for key in keys_to_add:
+            new_lines.append(f"{key}={updated[key]}\n")
+        
+        with open(env_file, 'w') as f:
+            f.writelines(new_lines)
+        
+        # Update runtime variables
+        if issuer:
+            os.environ['OIDC_ISSUER'] = issuer
+        if client_id:
+            os.environ['OIDC_CLIENT_ID'] = client_id
+        if client_secret:
+            os.environ['OIDC_CLIENT_SECRET'] = client_secret
+        if redirect_uri:
+            os.environ['OIDC_REDIRECT_URI'] = redirect_uri
+        if post_logout_uri:
+            os.environ['OIDC_POST_LOGOUT_URI'] = post_logout_uri
+        
+        log_activity('update_settings', 'oidc', 'OIDC settings updated', 'success')
+        
+        return jsonify({'message': 'OIDC settings updated successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/settings/monitoring', methods=['POST'])
+@require_auth
+def update_monitoring_settings():
+    """Update monitoring settings"""
+    data = request.json
+    enabled = data.get('enabled', True)
+    services = data.get('services', '')
+    
+    try:
+        env_file = '.env'
+        env_lines = []
+        
+        if os.path.exists(env_file):
+            with open(env_file, 'r') as f:
+                env_lines = f.readlines()
+        
+        updated = {
+            'ENABLE_LOG_MONITORING': 'true' if enabled else 'false',
+            'MONITOR_SERVICES': services
+        }
+        
+        new_lines = []
+        keys_to_add = set(updated.keys())
+        
+        for line in env_lines:
+            line_stripped = line.strip()
+            if not line_stripped or line_stripped.startswith('#'):
+                new_lines.append(line)
+                continue
+            
+            if '=' in line_stripped:
+                key = line_stripped.split('=', 1)[0].strip()
+                if key in updated:
+                    keys_to_add.discard(key)
+                    new_lines.append(f"{key}={updated[key]}\n")
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+        
+        for key in keys_to_add:
+            new_lines.append(f"{key}={updated[key]}\n")
+        
+        with open(env_file, 'w') as f:
+            f.writelines(new_lines)
+        
+        # Update runtime variables
+        os.environ['ENABLE_LOG_MONITORING'] = updated['ENABLE_LOG_MONITORING']
+        os.environ['MONITOR_SERVICES'] = services
+        
+        log_activity('update_settings', 'monitoring', 'Monitoring settings updated', 'success')
+        
+        return jsonify({'message': 'Monitoring settings updated successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+def auto_sync_url_lists():
+    """Background task to auto-sync URL lists"""
+    while True:
+        try:
+            conn = get_db_connection()
+            if conn:
+                with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                    cursor.execute("""
+                        SELECT * FROM url_lists 
+                        WHERE enabled = TRUE AND auto_sync = TRUE
+                    """)
+                    url_lists = cursor.fetchall()
+                    
+                    for url_list in url_lists:
+                        # Check if it's time to sync
+                        if url_list['last_sync']:
+                            last_sync = url_list['last_sync']
+                            if isinstance(last_sync, str):
+                                from datetime import datetime
+                                last_sync = datetime.fromisoformat(last_sync.replace('Z', '+00:00'))
+                            
+                            time_since_sync = (datetime.now() - last_sync).total_seconds()
+                            if time_since_sync < url_list['sync_interval']:
+                                continue
+                        
+                        # Sync this list
+                        try:
+                            print(f"[AUTO-SYNC] Syncing URL list: {url_list['name']}")
+                            # Call sync logic inline (simplified version)
+                            response = requests.get(url_list['url'], timeout=30, headers={
+                                'User-Agent': 'bWall/1.0'
+                            })
+                            response.raise_for_status()
+                            content = response.text
+                            
+                            # Parse IPs
+                            ip_addresses = []
+                            for line in content.split('\n'):
+                                line = line.strip()
+                                if not line or line.startswith('#') or line.startswith('//'):
+                                    continue
+                                if '#' in line:
+                                    line = line.split('#')[0].strip()
+                                if '//' in line:
+                                    line = line.split('//')[0].strip()
+                                if validate_ip(line):
+                                    ip_addresses.append(line)
+                            
+                            if ip_addresses:
+                                entries_added = 0
+                                list_type = url_list['list_type']
+                                description = f"Imported from URL: {url_list['name']}"
+                                
+                                with conn.cursor() as cursor2:
+                                    for ip in ip_addresses:
+                                        try:
+                                            if list_type == 'whitelist':
+                                                cursor2.execute("""
+                                                    INSERT INTO whitelist (ip_address, description)
+                                                    VALUES (%s, %s)
+                                                    ON DUPLICATE KEY UPDATE description = %s
+                                                """, (ip, description, description))
+                                            else:
+                                                cursor2.execute("""
+                                                    INSERT INTO blacklist (ip_address, description)
+                                                    VALUES (%s, %s)
+                                                    ON DUPLICATE KEY UPDATE description = %s
+                                                """, (ip, description, description))
+                                            
+                                            if cursor2.rowcount > 0:
+                                                entries_added += 1
+                                                if list_type == 'whitelist':
+                                                    apply_whitelist_rule(ip)
+                                                else:
+                                                    apply_blacklist_rule(ip)
+                                        except Exception as e:
+                                            print(f"[AUTO-SYNC] Error adding IP {ip}: {e}")
+                                
+                                conn.commit()
+                                
+                                # Update stats
+                                with conn.cursor() as cursor2:
+                                    cursor2.execute("""
+                                        UPDATE url_lists 
+                                        SET entry_count = %s, last_sync = NOW(), 
+                                            last_success = NOW(), last_error = NULL
+                                        WHERE id = %s
+                                    """, (entries_added, url_list['id']))
+                                conn.commit()
+                                
+                                print(f"[AUTO-SYNC] Synced {url_list['name']}: {entries_added} entries")
+                        except Exception as e:
+                            print(f"[AUTO-SYNC] Error syncing {url_list['name']}: {e}")
+                            try:
+                                with conn.cursor() as cursor2:
+                                    cursor2.execute("""
+                                        UPDATE url_lists 
+                                        SET last_error = %s, last_sync = NOW()
+                                        WHERE id = %s
+                                    """, (str(e), url_list['id']))
+                                conn.commit()
+                            except:
+                                pass
+                
+                conn.close()
+        except Exception as e:
+            print(f"[AUTO-SYNC] Error in auto-sync thread: {e}")
+        
+        # Sleep for 60 seconds before checking again
+        time.sleep(60)
 
 @app.route('/api/monitor/config', methods=['GET'])
 @require_auth
@@ -2382,6 +3214,43 @@ def installer_install():
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_timestamp (timestamp),
                 INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+            CREATE TABLE IF NOT EXISTS abuseipdb_queue (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                ip_address VARCHAR(45) NOT NULL,
+                categories JSON NOT NULL,
+                comment TEXT,
+                service VARCHAR(50),
+                attack_type VARCHAR(50),
+                source VARCHAR(20) DEFAULT 'auto',
+                status VARCHAR(20) DEFAULT 'pending',
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                submitted_at TIMESTAMP NULL,
+                INDEX idx_status (status),
+                INDEX idx_ip (ip_address),
+                INDEX idx_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+            CREATE TABLE IF NOT EXISTS url_lists (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                url TEXT NOT NULL,
+                list_type VARCHAR(20) NOT NULL,
+                enabled BOOLEAN DEFAULT TRUE,
+                auto_sync BOOLEAN DEFAULT FALSE,
+                sync_interval INT DEFAULT 3600,
+                last_sync TIMESTAMP NULL,
+                last_success TIMESTAMP NULL,
+                last_error TEXT,
+                entry_count INT DEFAULT 0,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_type (list_type),
+                INDEX idx_enabled (enabled),
+                INDEX idx_last_sync (last_sync)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
             """
             
@@ -2685,6 +3554,15 @@ if __name__ == '__main__':
                     print("⚠ Log monitoring failed to start")
             else:
                 print("⚠ Log monitoring disabled (set ENABLE_LOG_MONITORING=true to enable)")
+            
+            # Start URL list auto-sync thread
+            print("Starting URL list auto-sync thread...")
+            try:
+                url_sync_thread = threading.Thread(target=auto_sync_url_lists, daemon=True)
+                url_sync_thread.start()
+                print("✓ URL list auto-sync thread started")
+            except Exception as e:
+                print(f"⚠ Failed to start URL list auto-sync: {e}")
         else:
             print("⚠ Database not configured. Run installer to set up.")
     else:
