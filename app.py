@@ -112,9 +112,36 @@ OIDC_POST_LOGOUT_REDIRECT_URI = os.getenv('OIDC_POST_LOGOUT_REDIRECT_URI', f'{BA
 cors_origins = os.getenv('CORS_ORIGINS', f'{BASE_URL},http://localhost:{APP_PORT},http://127.0.0.1:{APP_PORT}')
 CORS(app, supports_credentials=True, origins=cors_origins.split(','))
 
+# Authentication Type Configuration
+AUTH_TYPE = os.getenv('AUTH_TYPE', '').strip().upper()
+if not AUTH_TYPE:
+    # Default: try ENV first (has defaults), then OIDC if available, otherwise local auth
+    auth_list = []
+    # ENV auth has defaults, so include it
+    auth_list.append('ENV')
+    if OIDC_AVAILABLE and OIDC_CLIENT_ID and OIDC_CLIENT_SECRET and OIDC_ISSUER:
+        auth_list.append('OIDC')
+    auth_list.append('LOCAL')
+    AUTH_TYPE = ','.join(auth_list)
+
+# Parse comma-separated auth types
+AUTH_TYPES = [t.strip().upper() for t in AUTH_TYPE.split(',') if t.strip()]
+ENV_AUTH_ENABLED = 'ENV' in AUTH_TYPES
+OIDC_AUTH_ENABLED = 'OIDC' in AUTH_TYPES
+LOCAL_AUTH_ENABLED = 'LOCAL' in AUTH_TYPES
+
+# ENV Authentication Configuration
+ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'bwall').strip()
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'ReadGoodBooks&BadNetworks').strip()
+ENV_AUTH_CONFIGURED = bool(ADMIN_USERNAME and ADMIN_PASSWORD)
+
+if ENV_AUTH_ENABLED and not ENV_AUTH_CONFIGURED:
+    print("Warning: AUTH_TYPE includes ENV but ADMIN_USERNAME or ADMIN_PASSWORD not set")
+    print("  ENV authentication will be disabled")
+
 # Initialize OIDC Authentication if configured
 auth = None
-if OIDC_AVAILABLE and OIDC_CLIENT_ID and OIDC_CLIENT_SECRET and OIDC_ISSUER:
+if OIDC_AUTH_ENABLED and OIDC_AVAILABLE and OIDC_CLIENT_ID and OIDC_CLIENT_SECRET and OIDC_ISSUER:
     try:
         client_metadata = ClientMetadata(
             client_id=OIDC_CLIENT_ID,
@@ -131,16 +158,28 @@ if OIDC_AVAILABLE and OIDC_CLIENT_ID and OIDC_CLIENT_SECRET and OIDC_ISSUER:
         print("OIDC authentication configured successfully")
     except Exception as e:
         print(f"Warning: OIDC configuration failed: {e}")
-        print("Application will run without authentication")
-elif not OIDC_AVAILABLE:
+        print("Application will run without OIDC authentication")
+        OIDC_AUTH_ENABLED = False
+elif OIDC_AUTH_ENABLED and not OIDC_AVAILABLE:
     if python_version.major == 3 and python_version.minor >= 13:
         print("Note: OIDC disabled due to Python 3.13 compatibility issues with 'future' package.")
         print("  To use OIDC, consider using Python 3.11 or 3.12.")
     else:
         print("Warning: OIDC libraries not available. Install with: pip install 'future>=0.18.3' 'Flask-pyoidc==3.0.0'")
-    print("Application will run without OIDC authentication")
-else:
+    print("OIDC authentication will be disabled")
+    OIDC_AUTH_ENABLED = False
+elif OIDC_AUTH_ENABLED:
     print("Warning: OIDC credentials not configured. Set OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, and OIDC_ISSUER environment variables.")
+    OIDC_AUTH_ENABLED = False
+
+# Print authentication configuration
+print(f"[AUTH] Authentication types enabled: {', '.join(AUTH_TYPES)}")
+if ENV_AUTH_ENABLED:
+    print(f"[AUTH] ENV auth: {'configured' if ENV_AUTH_CONFIGURED else 'not configured (missing ADMIN_USERNAME/ADMIN_PASSWORD)'}")
+if OIDC_AUTH_ENABLED:
+    print(f"[AUTH] OIDC auth: {'configured' if auth else 'not configured'}")
+if LOCAL_AUTH_ENABLED:
+    print(f"[AUTH] LOCAL auth: enabled (database-backed)")
 
 # Configuration
 UPLOAD_FOLDER = '/tmp/iptables_uploads'
@@ -284,10 +323,20 @@ def init_log_monitor():
     if not log_monitor:
         def block_callback(ip, service=None, attack_type=None):
             """Callback when IP is auto-blocked"""
+            # Check if IP is whitelisted before processing
+            if is_ip_whitelisted(ip):
+                print(f"[WHITELIST] Ignoring whitelisted IP {ip} - skipping block and AbuseIPDB reporting")
+                return
+            
             apply_blacklist_rule(ip)
             
             # Handle AbuseIPDB reporting based on mode
             if abuseipdb.enabled:
+                # Double-check whitelist before reporting
+                if is_ip_whitelisted(ip):
+                    print(f"[WHITELIST] Ignoring whitelisted IP {ip} - skipping AbuseIPDB reporting")
+                    return
+                
                 try:
                     categories = abuseipdb.map_attack_type_to_categories(
                         attack_type or 'other',
@@ -350,8 +399,23 @@ def validate_password(password):
         return False, "Password must contain at least one special character"
     return True, "Password is valid"
 
+def check_env_auth():
+    """Check if user is authenticated via ENV (simple username/password from .env)"""
+    if not ENV_AUTH_ENABLED or not ENV_AUTH_CONFIGURED:
+        return False
+    
+    if 'env_auth_username' not in session:
+        return False
+    
+    # ENV auth is simple - if session has the username and it matches, they're authenticated
+    session_username = session.get('env_auth_username')
+    return session_username == ADMIN_USERNAME
+
 def check_local_auth():
-    """Check if user is authenticated via local auth"""
+    """Check if user is authenticated via local auth (database-backed)"""
+    if not LOCAL_AUTH_ENABLED:
+        return False
+    
     if 'local_auth_token' not in session:
         return False
     
@@ -390,54 +454,89 @@ def check_local_auth():
         conn.close()
 
 def require_auth(f):
-    """Decorator to require authentication for routes"""
-    def wrapper(*args, **kwargs):
-        # First check OIDC if available
-        if auth and OIDC_AVAILABLE:
-            try:
-                # Check if OIDC session exists
-                if 'user' in session:
-                    return f(*args, **kwargs)
-            except:
-                pass
-        
-        # If OIDC not available or not authenticated, check local auth
-        if not check_local_auth():
-            return jsonify({
-                'error': 'Authentication required',
-                'authenticated': False,
-                'auth_type': 'local' if not (auth and OIDC_AVAILABLE) else 'oidc'
-            }), 401
-        
-        # Local auth successful, proceed
-        return f(*args, **kwargs)
+    """Decorator to require authentication for routes - respects AUTH_TYPE order"""
+    def check_auth_in_order():
+        """Check authentication in the order specified by AUTH_TYPE"""
+        # Check in order of AUTH_TYPES
+        for auth_type in AUTH_TYPES:
+            if auth_type == 'ENV':
+                if check_env_auth():
+                    return True, 'env'
+            elif auth_type == 'OIDC':
+                if auth and OIDC_AVAILABLE:
+                    try:
+                        if 'user' in session:
+                            return True, 'oidc'
+                    except:
+                        pass
+            elif auth_type == 'LOCAL':
+                if check_local_auth():
+                    return True, 'local'
+        return False, None
     
-    # If OIDC is available and configured, wrap with OIDC auth
-    if auth and OIDC_AVAILABLE:
-        # Use OIDC as primary, but allow local auth as fallback
+    def wrapper(*args, **kwargs):
+        authenticated, auth_method = check_auth_in_order()
+        
+        if authenticated:
+            return f(*args, **kwargs)
+        
+        # Not authenticated - return 401
+        return jsonify({
+            'error': 'Authentication required',
+            'authenticated': False,
+            'auth_types_available': AUTH_TYPES,
+            'env_auth_available': ENV_AUTH_ENABLED and ENV_AUTH_CONFIGURED,
+            'oidc_auth_available': OIDC_AUTH_ENABLED and auth is not None,
+            'local_auth_available': LOCAL_AUTH_ENABLED
+        }), 401
+    
+    # If OIDC is in the auth types and configured, wrap with OIDC auth
+    if OIDC_AUTH_ENABLED and auth and OIDC_AVAILABLE:
         def oidc_wrapper(*args, **kwargs):
             try:
-                # Try OIDC first
-                return auth.oidc_auth('default')(f)(*args, **kwargs)
-            except:
-                # If OIDC fails, try local auth
-                if check_local_auth():
+                # Try OIDC first if it's the first in the list
+                if AUTH_TYPES[0] == 'OIDC':
+                    return auth.oidc_auth('default')(f)(*args, **kwargs)
+                else:
+                    # OIDC is not first, check in order
+                    authenticated, auth_method = check_auth_in_order()
+                    if authenticated:
+                        return f(*args, **kwargs)
+                    # If not authenticated and OIDC is available, try OIDC redirect
+                    if OIDC_AUTH_ENABLED:
+                        return auth.oidc_auth('default')(f)(*args, **kwargs)
+                    return jsonify({'error': 'Authentication required'}), 401
+            except Exception as e:
+                # If OIDC fails, try other auth methods
+                authenticated, auth_method = check_auth_in_order()
+                if authenticated:
                     return f(*args, **kwargs)
                 return jsonify({'error': 'Authentication required'}), 401
+        oidc_wrapper.__name__ = f.__name__
         return oidc_wrapper
     
-    # No OIDC, use local auth wrapper
+    # No OIDC wrapper needed, use standard wrapper
     wrapper.__name__ = f.__name__
     return wrapper
 
 def get_user_info():
-    """Get current user information from session"""
-    # Try OIDC first
-    if auth and 'user' in session:
-        return session.get('user', {})
+    """Get current user information from session - checks all auth types"""
+    # Try ENV auth first
+    if ENV_AUTH_ENABLED and ENV_AUTH_CONFIGURED and check_env_auth():
+        return {
+            'username': ADMIN_USERNAME,
+            'auth_type': 'env',
+            'is_admin': True
+        }
+    
+    # Try OIDC
+    if OIDC_AUTH_ENABLED and auth and 'user' in session:
+        user_data = session.get('user', {})
+        user_data['auth_type'] = 'oidc'
+        return user_data
     
     # Try local auth
-    if 'local_auth_token' in session:
+    if LOCAL_AUTH_ENABLED and 'local_auth_token' in session:
         token = session.get('local_auth_token')
         conn = get_db_connection()
         if not conn:
@@ -781,6 +880,58 @@ def validate_ip(ip_str):
     except ValueError:
         return False
 
+def is_ip_whitelisted(ip_address):
+    """
+    Check if an IP address is whitelisted (including CIDR matching)
+    
+    Args:
+        ip_address: IP address to check (string)
+    
+    Returns:
+        bool: True if IP is whitelisted, False otherwise
+    """
+    if not ip_address:
+        return False
+    
+    try:
+        # Parse the IP to check
+        check_ip = ipaddress.ip_address(ip_address.split('/')[0])
+    except ValueError:
+        return False
+    
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    try:
+        with conn.cursor() as cursor:
+            # Get all whitelist entries
+            cursor.execute("SELECT ip_address FROM whitelist")
+            whitelist_entries = cursor.fetchall()
+            
+            for entry in whitelist_entries:
+                whitelist_ip = entry[0]
+                try:
+                    # Check if it's a CIDR range
+                    if '/' in whitelist_ip:
+                        network = ipaddress.ip_network(whitelist_ip, strict=False)
+                        if check_ip in network:
+                            return True
+                    else:
+                        # Direct IP match
+                        if str(check_ip) == whitelist_ip:
+                            return True
+                except (ValueError, ipaddress.AddressValueError):
+                    # Invalid entry, skip
+                    continue
+        
+        return False
+    except Exception as e:
+        print(f"[WHITELIST] Error checking whitelist for {ip_address}: {e}")
+        return False
+    finally:
+        conn.close()
+
 def log_activity(action, type, entry, status='success'):
     """Log activity to database"""
     conn = get_db_connection()
@@ -801,6 +952,11 @@ def log_activity(action, type, entry, status='success'):
 
 def queue_abuseipdb_report(ip_address, categories, comment, service=None, attack_type=None, source='manual'):
     """Queue an AbuseIPDB report for review"""
+    # Check if IP is whitelisted - don't queue whitelisted IPs
+    if is_ip_whitelisted(ip_address):
+        print(f"[WHITELIST] Ignoring whitelisted IP {ip_address} - not queueing for AbuseIPDB")
+        return False
+    
     conn = get_db_connection()
     if not conn:
         return False
@@ -1366,34 +1522,42 @@ def add_blacklist():
         else:
             log_activity('add_blacklist', 'blacklist', ip_address, 'success')
         
+        # Check if IP is whitelisted before processing
+        if is_ip_whitelisted(ip_address):
+            return jsonify({'error': 'IP address is whitelisted and cannot be added to blacklist'}), 400
+        
         # Handle AbuseIPDB reporting based on mode
         abuseipdb_handled = False
         if abuseipdb.enabled and data.get('report_to_abuseipdb', False):
-            categories = data.get('abuseipdb_categories', ['other'])
-            comment = description or f"Manually blocked: {ip_address}"
-            # Sanitize comment before reporting
-            sanitized_comment = sanitize_abuseipdb_comment(comment, ip_address)
-            
-            if ABUSEIPDB_MODE == 'automatic':
-                # Report immediately
-                try:
-                    result = abuseipdb.report_ip(ip_address, categories, sanitized_comment)
-                    if 'error' not in result:
+            # Double-check whitelist before reporting
+            if is_ip_whitelisted(ip_address):
+                print(f"[WHITELIST] Ignoring whitelisted IP {ip_address} - skipping AbuseIPDB reporting")
+            else:
+                categories = data.get('abuseipdb_categories', ['other'])
+                comment = description or f"Manually blocked: {ip_address}"
+                # Sanitize comment before reporting
+                sanitized_comment = sanitize_abuseipdb_comment(comment, ip_address)
+                
+                if ABUSEIPDB_MODE == 'automatic':
+                    # Report immediately
+                    try:
+                        result = abuseipdb.report_ip(ip_address, categories, sanitized_comment)
+                        if 'error' not in result:
+                            abuseipdb_handled = True
+                            log_activity('report_abuseipdb', 'blacklist', ip_address, 'success')
+                    except Exception as e:
+                        print(f"[AbuseIPDB] Error reporting IP {ip_address}: {e}")
+                
+                elif ABUSEIPDB_MODE == 'log_and_hold':
+                    # Queue for review
+                    if queue_abuseipdb_report(ip_address, categories, comment, None, None, 'manual'):
                         abuseipdb_handled = True
-                        log_activity('report_abuseipdb', 'blacklist', ip_address, 'success')
-                except Exception as e:
-                    print(f"[AbuseIPDB] Error reporting IP {ip_address}: {e}")
-            
-            elif ABUSEIPDB_MODE == 'log_and_hold':
-                # Queue for review
-                if queue_abuseipdb_report(ip_address, categories, comment, None, None, 'manual'):
+                        log_activity('queue_abuseipdb', 'blacklist', ip_address, 'pending')
+                
+                elif ABUSEIPDB_MODE == 'log_only':
+                    # Just log
+                    log_activity('log_abuseipdb', 'blacklist', ip_address, 'logged')
                     abuseipdb_handled = True
-                    log_activity('queue_abuseipdb', 'blacklist', ip_address, 'pending')
-            
-            elif ABUSEIPDB_MODE == 'log_only':
-                # Just log
-                log_activity('log_abuseipdb', 'blacklist', ip_address, 'logged')
-                abuseipdb_handled = True
         
         response = {'message': 'Blacklist entry added successfully'}
         if abuseipdb_handled:
@@ -2232,42 +2396,213 @@ def test_database():
     
     return jsonify(result)
 
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    """Login endpoint - supports ENV and LOCAL auth"""
+    data = request.json
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    
+    if not username or not password:
+        return jsonify({'error': 'Username and password are required'}), 400
+    
+    # Try ENV auth first if enabled
+    if ENV_AUTH_ENABLED and ENV_AUTH_CONFIGURED:
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            # Create ENV auth session
+            session['env_auth_username'] = username
+            session.permanent = True
+            return jsonify({
+                'message': 'Login successful',
+                'user': {
+                    'username': username,
+                    'auth_type': 'env',
+                    'is_admin': True
+                },
+                'authenticated': True
+            })
+    
+    # Try LOCAL auth if enabled
+    if LOCAL_AUTH_ENABLED:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT * FROM users 
+                    WHERE username = %s AND is_active = TRUE
+                """, (username,))
+                user = cursor.fetchone()
+                
+                if not user:
+                    return jsonify({'error': 'Invalid username or password'}), 401
+                
+                # Check if account is locked
+                if user['locked_until'] and user['locked_until'] > datetime.now():
+                    return jsonify({
+                        'error': f'Account locked until {user["locked_until"]}'
+                    }), 403
+                
+                # Verify password
+                if not verify_password(password, user['password_hash']):
+                    # Increment failed attempts
+                    failed_attempts = user['failed_login_attempts'] + 1
+                    locked_until = None
+                    
+                    # Lock account after 5 failed attempts for 30 minutes
+                    if failed_attempts >= 5:
+                        locked_until = datetime.now() + timedelta(minutes=30)
+                    
+                    cursor.execute("""
+                        UPDATE users 
+                        SET failed_login_attempts = %s, locked_until = %s
+                        WHERE id = %s
+                    """, (failed_attempts, locked_until, user['id']))
+                    conn.commit()
+                    
+                    if failed_attempts >= 5:
+                        return jsonify({
+                            'error': 'Account locked due to too many failed login attempts'
+                        }), 403
+                    
+                    return jsonify({'error': 'Invalid username or password'}), 401
+                
+                # Login successful - reset failed attempts
+                cursor.execute("""
+                    UPDATE users 
+                    SET failed_login_attempts = 0, locked_until = NULL, last_login = NOW()
+                    WHERE id = %s
+                """, (user['id'],))
+                conn.commit()
+                
+                # Create session token
+                session_token = secrets.token_urlsafe(32)
+                expires_at = datetime.now() + timedelta(days=7)
+                
+                cursor.execute("""
+                    INSERT INTO user_sessions (user_id, session_token, ip_address, user_agent, expires_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (user['id'], session_token, request.remote_addr, request.headers.get('User-Agent'), expires_at))
+                conn.commit()
+                
+                session['local_auth_token'] = session_token
+                session.permanent = True
+                
+                return jsonify({
+                    'message': 'Login successful',
+                    'user': {
+                        'id': user['id'],
+                        'username': user['username'],
+                        'email': user['email'],
+                        'full_name': user['full_name'],
+                        'is_admin': user['is_admin'],
+                        'auth_type': 'local'
+                    },
+                    'authenticated': True
+                })
+        except Exception as e:
+            print(f"[AUTH] Login error: {e}")
+            return jsonify({'error': 'Login failed'}), 500
+        finally:
+            conn.close()
+    
+    return jsonify({'error': 'Invalid username or password'}), 401
+
 @app.route('/api/auth/user', methods=['GET'])
 def get_user():
     """Get current authenticated user information"""
-    # If OIDC is not available, return unauthenticated but allow access
-    if not OIDC_AVAILABLE or not auth:
+    # Check ENV auth first
+    if ENV_AUTH_ENABLED and ENV_AUTH_CONFIGURED and check_env_auth():
         return jsonify({
-            'authenticated': False,
-            'oidc_available': False,
-            'message': 'OIDC not available - running without authentication'
+            'authenticated': True,
+            'user': {
+                'username': ADMIN_USERNAME,
+                'auth_type': 'env',
+                'is_admin': True
+            },
+            'auth_types_available': AUTH_TYPES,
+            'env_auth_available': True,
+            'oidc_auth_available': OIDC_AUTH_ENABLED and auth is not None,
+            'local_auth_available': LOCAL_AUTH_ENABLED
         })
     
-    # Try to get user info if OIDC is available
-    try:
+    # Check OIDC auth
+    if OIDC_AUTH_ENABLED and auth and OIDC_AVAILABLE:
+        try:
+            if 'user' in session:
+                user_info = session.get('user', {})
+                return jsonify({
+                    'authenticated': True,
+                    'user': user_info,
+                    'auth_type': 'oidc',
+                    'auth_types_available': AUTH_TYPES,
+                    'env_auth_available': ENV_AUTH_ENABLED and ENV_AUTH_CONFIGURED,
+                    'oidc_auth_available': True,
+                    'local_auth_available': LOCAL_AUTH_ENABLED
+                })
+        except:
+            pass
+    
+    # Check LOCAL auth
+    if LOCAL_AUTH_ENABLED:
         user_info = get_user_info()
         if user_info:
             return jsonify({
                 'authenticated': True,
-                'user': user_info
+                'user': user_info,
+                'auth_type': 'local',
+                'auth_types_available': AUTH_TYPES,
+                'env_auth_available': ENV_AUTH_ENABLED and ENV_AUTH_CONFIGURED,
+                'oidc_auth_available': OIDC_AUTH_ENABLED and auth is not None,
+                'local_auth_available': True
             })
-        return jsonify({
-            'authenticated': False,
-            'oidc_available': True
-        })
-    except:
-        # If auth check fails but OIDC is available, return unauthenticated
-        return jsonify({
-            'authenticated': False,
-            'oidc_available': True
-        })
+    
+    # Not authenticated - return available auth types
+    return jsonify({
+        'authenticated': False,
+        'auth_types_available': AUTH_TYPES,
+        'env_auth_available': ENV_AUTH_ENABLED and ENV_AUTH_CONFIGURED,
+        'oidc_auth_available': OIDC_AUTH_ENABLED and auth is not None,
+        'local_auth_available': LOCAL_AUTH_ENABLED
+    }), 401
 
 @app.route('/api/auth/logout', methods=['POST'])
+@require_auth
 def logout():
-    """Logout user"""
-    if auth:
-        return auth.logout()
-    return jsonify({'message': 'Logged out'}), 200
+    """Logout user - clears all auth types"""
+    # Clear ENV auth session
+    if 'env_auth_username' in session:
+        session.pop('env_auth_username', None)
+    
+    # Clear OIDC session
+    if auth and 'user' in session:
+        session.pop('user', None)
+        # If OIDC is configured, use its logout
+        try:
+            return auth.logout()
+        except:
+            pass
+    
+    # Clear local auth session
+    if 'local_auth_token' in session:
+        token = session.get('local_auth_token')
+        session.pop('local_auth_token', None)
+        
+        # Delete session from database
+        conn = get_db_connection()
+        if conn:
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM user_sessions WHERE session_token = %s", (token,))
+                conn.commit()
+            except Exception as e:
+                print(f"[AUTH] Error deleting session: {e}")
+            finally:
+                conn.close()
+    
+    return jsonify({'message': 'Logged out successfully'})
 
 # Log Monitoring API Routes
 @app.route('/api/monitor/status', methods=['GET'])
@@ -2346,6 +2681,10 @@ def abuseipdb_report():
     
     if not categories:
         return jsonify({'error': 'At least one category is required'}), 400
+    
+    # Check if IP is whitelisted - don't report whitelisted IPs
+    if is_ip_whitelisted(ip_address):
+        return jsonify({'error': 'IP address is whitelisted and cannot be reported'}), 400
     
     # Sanitize comment before reporting
     sanitized_comment = sanitize_abuseipdb_comment(comment, ip_address)
@@ -2450,6 +2789,17 @@ def abuseipdb_queue_submit():
             
             for report in reports:
                 try:
+                    # Check if IP is whitelisted - skip whitelisted IPs
+                    if is_ip_whitelisted(report['ip_address']):
+                        print(f"[WHITELIST] Skipping whitelisted IP {report['ip_address']} in queue submission")
+                        # Mark as skipped
+                        cursor.execute("""
+                            UPDATE abuseipdb_queue 
+                            SET status = 'skipped', error_message = 'IP is whitelisted'
+                            WHERE id = %s
+                        """, (report['id'],))
+                        continue
+                    
                     categories = json.loads(report['categories']) if isinstance(report['categories'], str) else report['categories']
                     # Sanitize comment before submitting
                     original_comment = report['comment'] or ''

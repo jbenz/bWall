@@ -237,16 +237,40 @@ class LogMonitor:
         if not self._is_valid_ip(ip):
             return False
         
-        # Check if IP is in whitelist
+        # Check if IP is in whitelist (including CIDR ranges)
         conn = self._get_db_connection()
         if conn:
             try:
+                import ipaddress as ip_lib
+                # Parse the IP to check
+                try:
+                    check_ip = ip_lib.ip_address(ip.split('/')[0])
+                except ValueError:
+                    return False
+                
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT id FROM whitelist WHERE ip_address = %s", (ip,))
-                    if cursor.fetchone():
-                        return False  # IP is whitelisted
-            except:
-                pass
+                    cursor.execute("SELECT ip_address FROM whitelist")
+                    whitelist_entries = cursor.fetchall()
+                    
+                    for entry in whitelist_entries:
+                        whitelist_ip = entry[0]
+                        try:
+                            # Check if it's a CIDR range
+                            if '/' in whitelist_ip:
+                                network = ip_lib.ip_network(whitelist_ip, strict=False)
+                                if check_ip in network:
+                                    print(f"[WHITELIST] Ignoring whitelisted IP {ip} (matches {whitelist_ip}) - skipping block")
+                                    return False
+                            else:
+                                # Direct IP match
+                                if str(check_ip) == whitelist_ip:
+                                    print(f"[WHITELIST] Ignoring whitelisted IP {ip} - skipping block")
+                                    return False
+                        except (ValueError, ip_lib.AddressValueError):
+                            # Invalid entry, skip
+                            continue
+            except Exception as e:
+                print(f"[WHITELIST] Error checking whitelist for {ip}: {e}")
             finally:
                 conn.close()
         

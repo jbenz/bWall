@@ -640,12 +640,56 @@ fi
 
 echo ""
 
-# Step 5: OIDC/PocketID Configuration
-print_info "Step 5: OIDC/PocketID Configuration"
+# Step 5: Authentication Configuration
+print_info "Step 5: Authentication Configuration"
+echo ""
+echo "bWall supports multiple authentication types:"
+echo "  - ENV: Simple username/password from .env file (ADMIN_USERNAME, ADMIN_PASSWORD)"
+echo "  - OIDC: OpenID Connect (PocketID, etc.)"
+echo "  - LOCAL: Database-backed user accounts"
+echo ""
+echo "You can specify one or more (comma-separated), e.g., 'ENV,OIDC' will try ENV first, then OIDC"
+echo ""
+read -p "Authentication type(s) [ENV,OIDC,LOCAL or leave blank for auto-detect]: " AUTH_TYPE_INPUT
+AUTH_TYPE_INPUT=${AUTH_TYPE_INPUT:-""}
 
-read -p "Would you like to configure PocketID OIDC authentication? (y/n): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
+# Step 5a: ENV Authentication Configuration
+if [[ "$AUTH_TYPE_INPUT" == *"ENV"* ]] || [[ -z "$AUTH_TYPE_INPUT" ]]; then
+    print_info "Step 5a: ENV Authentication Configuration"
+    echo ""
+    read -p "Would you like to configure ENV authentication? (y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+    read -p "Admin Username [bwall]: " ADMIN_USERNAME_INPUT
+    ADMIN_USERNAME_INPUT=${ADMIN_USERNAME_INPUT:-bwall}
+    read -sp "Admin Password [ReadGoodBooks&BadNetworks]: " ADMIN_PASSWORD_INPUT
+    echo ""
+    ADMIN_PASSWORD_INPUT=${ADMIN_PASSWORD_INPUT:-ReadGoodBooks&BadNetworks}
+    if [ -n "$ADMIN_USERNAME_INPUT" ] && [ -n "$ADMIN_PASSWORD_INPUT" ]; then
+        ADMIN_USERNAME="$ADMIN_USERNAME_INPUT"
+        ADMIN_PASSWORD="$ADMIN_PASSWORD_INPUT"
+        print_success "ENV authentication configured"
+    else
+        print_warning "ENV authentication skipped (missing username or password)"
+        ADMIN_USERNAME=""
+        ADMIN_PASSWORD=""
+    fi
+    else
+        ADMIN_USERNAME=""
+        ADMIN_PASSWORD=""
+    fi
+else
+    ADMIN_USERNAME=""
+    ADMIN_PASSWORD=""
+fi
+
+# Step 5b: OIDC/PocketID Configuration
+if [[ "$AUTH_TYPE_INPUT" == *"OIDC"* ]] || [[ -z "$AUTH_TYPE_INPUT" ]]; then
+    print_info "Step 5b: OIDC/PocketID Configuration"
+    echo ""
+    read -p "Would you like to configure PocketID OIDC authentication? (y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
     print_info "PocketID OIDC Configuration"
     echo "Please have the following information ready:"
     echo "  - PocketID Issuer URL"
@@ -664,22 +708,59 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     read -p "Post-Logout Redirect URI [http://localhost:5000/]: " OIDC_POST_LOGOUT_URI
     OIDC_POST_LOGOUT_URI=${OIDC_POST_LOGOUT_URI:-http://localhost:5000/}
     
-    # Generate secret key
-    if command_exists openssl; then
-        SECRET_KEY=$(openssl rand -hex 32)
-    else
-        SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-    fi
-    
     print_success "OIDC configuration collected"
+    else
+        print_info "Skipping OIDC configuration. You can configure it later using environment variables."
+        OIDC_ISSUER=""
+        OIDC_CLIENT_ID=""
+        OIDC_CLIENT_SECRET=""
+        OIDC_REDIRECT_URI=""
+        OIDC_POST_LOGOUT_URI=""
+    fi
 else
-    print_info "Skipping OIDC configuration. You can configure it later using environment variables."
     OIDC_ISSUER=""
     OIDC_CLIENT_ID=""
     OIDC_CLIENT_SECRET=""
     OIDC_REDIRECT_URI=""
     OIDC_POST_LOGOUT_URI=""
-    SECRET_KEY=""
+fi
+
+# Determine AUTH_TYPE
+if [ -z "$AUTH_TYPE_INPUT" ]; then
+    # Auto-detect based on what's configured
+    AUTH_TYPES_LIST=()
+    # Default to ENV if not explicitly configured
+    if [ -z "$ADMIN_USERNAME" ] && [ -z "$ADMIN_PASSWORD" ]; then
+        # Use defaults
+        ADMIN_USERNAME="bwall"
+        ADMIN_PASSWORD="ReadGoodBooks&BadNetworks"
+    fi
+    if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
+        AUTH_TYPES_LIST+=("ENV")
+    fi
+    if [ -n "$OIDC_ISSUER" ] && [ -n "$OIDC_CLIENT_ID" ] && [ -n "$OIDC_CLIENT_SECRET" ]; then
+        AUTH_TYPES_LIST+=("OIDC")
+    fi
+    if [ ${#AUTH_TYPES_LIST[@]} -eq 0 ]; then
+        AUTH_TYPES_LIST+=("LOCAL")
+    fi
+    AUTH_TYPE=$(IFS=','; echo "${AUTH_TYPES_LIST[*]}")
+else
+    AUTH_TYPE="$AUTH_TYPE_INPUT"
+    # If ENV is in AUTH_TYPE but credentials not set, use defaults
+    if [[ "$AUTH_TYPE" == *"ENV"* ]] && [ -z "$ADMIN_USERNAME" ] && [ -z "$ADMIN_PASSWORD" ]; then
+        ADMIN_USERNAME="bwall"
+        ADMIN_PASSWORD="ReadGoodBooks&BadNetworks"
+    fi
+fi
+
+# Generate secret key if not set
+if [ -z "$SECRET_KEY" ]; then
+    if command_exists openssl; then
+        SECRET_KEY=$(openssl rand -hex 32)
+    else
+        SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+    fi
 fi
 
 echo ""
@@ -742,29 +823,39 @@ DB_USER=$DB_USER
 DB_PASSWORD=$DB_PASSWORD
 DB_NAME=$DB_NAME
 
-# OIDC Configuration
+# Authentication Configuration
+AUTH_TYPE=$AUTH_TYPE
 EOF
 
+# Add ENV auth if configured
+if [ -n "$ADMIN_USERNAME" ] && [ -n "$ADMIN_PASSWORD" ]; then
+    cat >> "$ENV_FILE" <<EOF
+
+# ENV Authentication (if AUTH_TYPE includes ENV)
+ADMIN_USERNAME=$ADMIN_USERNAME
+ADMIN_PASSWORD=$ADMIN_PASSWORD
+EOF
+fi
+
+# Add OIDC if configured
 if [ -n "$OIDC_ISSUER" ]; then
     cat >> "$ENV_FILE" <<EOF
+
+# OIDC Configuration (if AUTH_TYPE includes OIDC)
 OIDC_ISSUER=$OIDC_ISSUER
 OIDC_CLIENT_ID=$OIDC_CLIENT_ID
 OIDC_CLIENT_SECRET=$OIDC_CLIENT_SECRET
 OIDC_REDIRECT_URI=$OIDC_REDIRECT_URI
 OIDC_POST_LOGOUT_REDIRECT_URI=$OIDC_POST_LOGOUT_URI
-SECRET_KEY=$SECRET_KEY
-EOF
-else
-    cat >> "$ENV_FILE" <<EOF
-# OIDC not configured - set these to enable authentication
-# OIDC_ISSUER=
-# OIDC_CLIENT_ID=
-# OIDC_CLIENT_SECRET=
-# OIDC_REDIRECT_URI=
-# OIDC_POST_LOGOUT_REDIRECT_URI=
-# SECRET_KEY=
 EOF
 fi
+
+# Add secret key (always needed)
+cat >> "$ENV_FILE" <<EOF
+
+# Application Secret Key
+SECRET_KEY=$SECRET_KEY
+EOF
 
 # AbuseIPDB Configuration
 if [ -n "$ABUSEIPDB_API_KEY" ]; then
