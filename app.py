@@ -2626,13 +2626,14 @@ def get_user():
             })
     
     # Not authenticated - return available auth types
+    # Return 200 OK since this endpoint provides useful info even when not authenticated
     return jsonify({
         'authenticated': False,
-        'auth_types_available': AUTH_TYPES,
+        'auth_types_available': AUTH_TYPES if AUTH_TYPES else [],
         'env_auth_available': ENV_AUTH_ENABLED and ENV_AUTH_CONFIGURED,
         'oidc_auth_available': OIDC_AUTH_ENABLED and auth is not None,
         'local_auth_available': LOCAL_AUTH_ENABLED
-    }), 401
+    }), 200
 
 @app.route('/api/auth/logout', methods=['POST'])
 @require_auth

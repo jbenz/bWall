@@ -274,7 +274,19 @@
         async function loadAuthOptions() {
             try {
                 const response = await fetch(`${API_BASE}/api/auth/user`);
-                const data = await response.ok ? await response.json() : { authenticated: false };
+                // Parse JSON even if status is 401 - it contains auth availability info
+                let data;
+                try {
+                    data = await response.json();
+                } catch (e) {
+                    // If JSON parsing fails, use defaults
+                    data = { 
+                        authenticated: false,
+                        env_auth_available: false,
+                        oidc_auth_available: false,
+                        local_auth_available: false
+                    };
+                }
                 
                 const container = document.getElementById('auth-options-container');
                 
@@ -367,7 +379,16 @@
                 }
                 
                 if (!html) {
+                    // Debug: log what we received
+                    console.error('No auth methods available. Response data:', data);
                     html = '<div class="alert alert-warning">No authentication methods available. Please contact your administrator.</div>';
+                    html += '<div class="alert alert-info mt-2" style="font-size: 0.85rem;">';
+                    html += '<strong>Debug Info:</strong><br>';
+                    html += `ENV Auth: ${data.env_auth_available || false}<br>`;
+                    html += `OIDC Auth: ${data.oidc_auth_available || false}<br>`;
+                    html += `Local Auth: ${data.local_auth_available || false}<br>`;
+                    html += `Auth Types: ${data.auth_types_available || 'none'}<br>`;
+                    html += '</div>';
                 }
                 
                 container.innerHTML = html;
