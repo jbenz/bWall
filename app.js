@@ -587,17 +587,44 @@ async function importData() {
 
 // Sync Functions
 async function checkDbStatus() {
+    const statusDiv = document.getElementById('db-status');
+    const lastSyncDiv = document.getElementById('last-sync');
+    
     try {
-        const response = await fetch(`${API_BASE}/sync/status`, fetchOptions);
-        const status = await response.json();
+        // First test the connection
+        const testResponse = await fetch(`${API_BASE}/db/test`, fetchOptions);
+        const testResult = await testResponse.json();
         
-        document.getElementById('db-status').textContent = status.connected ? 'Connected' : 'Disconnected';
-        document.getElementById('db-status').className = `badge bg-${status.connected ? 'success' : 'danger'}`;
-        document.getElementById('last-sync').textContent = status.last_sync ? new Date(status.last_sync).toLocaleString() : 'Never';
+        if (testResult.connected) {
+            // If connected, get sync status
+            const response = await fetch(`${API_BASE}/sync/status`, fetchOptions);
+            const status = await response.json();
+            
+            statusDiv.textContent = 'Connected';
+            statusDiv.className = 'badge bg-success';
+            if (lastSyncDiv) {
+                lastSyncDiv.textContent = status.last_sync ? new Date(status.last_sync).toLocaleString() : 'Never';
+            }
+        } else {
+            statusDiv.textContent = 'Disconnected';
+            statusDiv.className = 'badge bg-danger';
+            if (lastSyncDiv) {
+                lastSyncDiv.textContent = 'N/A';
+            }
+            
+            // Show error details in console
+            console.error('Database connection error:', testResult.error);
+            if (testResult.suggestions) {
+                console.log('Suggestions:', testResult.suggestions);
+            }
+        }
     } catch (error) {
         console.error('Error checking DB status:', error);
-        document.getElementById('db-status').textContent = 'Error';
-        document.getElementById('db-status').className = 'badge bg-danger';
+        statusDiv.textContent = 'Error';
+        statusDiv.className = 'badge bg-danger';
+        if (lastSyncDiv) {
+            lastSyncDiv.textContent = 'N/A';
+        }
     }
 }
 

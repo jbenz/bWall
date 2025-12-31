@@ -162,10 +162,25 @@ def get_db_connection():
         # Check if database is configured
         if not all([DB_CONFIG.get('host'), DB_CONFIG.get('user'), 
                    DB_CONFIG.get('password'), DB_CONFIG.get('database')]):
+            print("Database configuration incomplete. Missing required fields.")
             return None
-        return pymysql.connect(**DB_CONFIG)
+        
+        # Try to connect
+        conn = pymysql.connect(**DB_CONFIG)
+        return conn
+    except pymysql.Error as e:
+        error_code, error_msg = e.args
+        print(f"Database connection error ({error_code}): {error_msg}")
+        print(f"Attempted connection with:")
+        print(f"  Host: {DB_CONFIG.get('host')}")
+        print(f"  User: {DB_CONFIG.get('user')}")
+        print(f"  Database: {DB_CONFIG.get('database')}")
+        print(f"  Password: {'*' * len(DB_CONFIG.get('password', '')) if DB_CONFIG.get('password') else 'NOT SET'}")
+        return None
     except Exception as e:
         print(f"Database connection error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def init_database():
@@ -1113,6 +1128,73 @@ def test_endpoint():
             'app.py': os.path.exists(os.path.join(APP_DIR, 'app.py'))
         }
     })
+
+@app.route('/api/db/test', methods=['GET'])
+def test_database():
+    """Test database connection and return diagnostic information"""
+    result = {
+        'configured': False,
+        'connected': False,
+        'error': None,
+        'config': {}
+    }
+    
+    # Check if configured
+    if not all([DB_CONFIG.get('host'), DB_CONFIG.get('user'), 
+               DB_CONFIG.get('password'), DB_CONFIG.get('database')]):
+        result['error'] = 'Database configuration incomplete'
+        result['config'] = {
+            'host': DB_CONFIG.get('host', 'NOT SET'),
+            'user': DB_CONFIG.get('user', 'NOT SET'),
+            'database': DB_CONFIG.get('database', 'NOT SET'),
+            'password_set': bool(DB_CONFIG.get('password'))
+        }
+        return jsonify(result)
+    
+    result['configured'] = True
+    result['config'] = {
+        'host': DB_CONFIG.get('host'),
+        'user': DB_CONFIG.get('user'),
+        'database': DB_CONFIG.get('database'),
+        'password_set': bool(DB_CONFIG.get('password'))
+    }
+    
+    # Try to connect
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        conn.close()
+        result['connected'] = True
+        result['message'] = 'Database connection successful'
+    except pymysql.Error as e:
+        error_code, error_msg = e.args
+        result['error'] = f"({error_code}) {error_msg}"
+        result['suggestions'] = []
+        
+        if error_code == 1045:  # Access denied
+            result['suggestions'].extend([
+                'Check that the password in .env file is correct',
+                'Verify the user exists: mysql -u root -p -e "SELECT User, Host FROM mysql.user WHERE User=\'{}\';"'.format(DB_CONFIG.get('user')),
+                'Reset the user password: mysql -u root -p -e "ALTER USER \'{}\'@\'localhost\' IDENTIFIED BY \'your_password\';"'.format(DB_CONFIG.get('user')),
+                'Grant privileges: mysql -u root -p -e "GRANT ALL PRIVILEGES ON {}.* TO \'{}\'@\'localhost\'; FLUSH PRIVILEGES;"'.format(DB_CONFIG.get('database'), DB_CONFIG.get('user'))
+            ])
+        elif error_code == 1049:  # Unknown database
+            result['suggestions'].extend([
+                'Database does not exist. Create it: mysql -u root -p -e "CREATE DATABASE {};"'.format(DB_CONFIG.get('database')),
+                'Or run the quickstart script: ./quickstart.sh'
+            ])
+        elif error_code == 2003:  # Can't connect to server
+            result['suggestions'].extend([
+                'Check if MariaDB/MySQL server is running: systemctl status mariadb',
+                'Verify the host is correct in .env file',
+                'Check firewall settings'
+            ])
+    except Exception as e:
+        result['error'] = str(e)
+    
+    return jsonify(result)
 
 @app.route('/api/auth/user', methods=['GET'])
 def get_user():
