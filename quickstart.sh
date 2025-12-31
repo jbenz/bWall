@@ -474,6 +474,50 @@ CREATE TABLE IF NOT EXISTS system_settings (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_key (setting_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Monitored services configuration table
+CREATE TABLE IF NOT EXISTS monitored_services (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    service_name VARCHAR(50) NOT NULL UNIQUE,
+    enabled BOOLEAN DEFAULT TRUE,
+    threshold INT DEFAULT 5,
+    duration_minutes INT DEFAULT 60,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_enabled (enabled),
+    INDEX idx_service (service_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Permanent ban blacklist table
+CREATE TABLE IF NOT EXISTS permaban_blacklist (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ip_address VARCHAR(45) NOT NULL UNIQUE,
+    abuse_count INT DEFAULT 0,
+    abuse_score INT DEFAULT 0,
+    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    reason TEXT,
+    INDEX idx_ip (ip_address),
+    INDEX idx_score (abuse_score),
+    INDEX idx_last_seen (last_seen)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Abuse history table for tracking all monitoring events
+CREATE TABLE IF NOT EXISTS abuse_history (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ip_address VARCHAR(45) NOT NULL,
+    service VARCHAR(50),
+    attack_type VARCHAR(50),
+    severity VARCHAR(20) DEFAULT 'medium',
+    blocked BOOLEAN DEFAULT FALSE,
+    reported_to_abuseipdb BOOLEAN DEFAULT FALSE,
+    permabanned BOOLEAN DEFAULT FALSE,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_ip (ip_address),
+    INDEX idx_timestamp (timestamp),
+    INDEX idx_service (service),
+    INDEX idx_blocked (blocked)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 EOF
 
 if [ $? -eq 0 ]; then

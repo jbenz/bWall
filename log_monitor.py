@@ -191,11 +191,13 @@ class LogMonitor:
             print(f"Error reading log {log_path}: {e}")
             return [], last_position
     
-    def _check_threshold(self, ip, service, attack_type):
+    def _check_threshold(self, ip, service, attack_type, threshold=None, window=None):
         """Check if IP has exceeded threshold for blocking"""
-        config = self.attack_patterns.get(service, {})
-        threshold = config.get('threshold', 5)
-        window = config.get('window', 300)
+        # Use provided threshold/window or get from config
+        if threshold is None or window is None:
+            config = self.attack_patterns.get(service, {})
+            threshold = threshold or config.get('threshold', 5)
+            window = window or config.get('window', 300)
         
         # Clean old entries
         now = time.time()
@@ -208,9 +210,24 @@ class LogMonitor:
         self.failed_attempts[ip].append(now)
         
         # Check threshold
-        if len(self.failed_attempts[ip]) >= threshold:
-            return True
-        return False
+        exceeded = len(self.failed_attempts[ip]) >= threshold
+        
+        # Record in abuse history when threshold exceeded
+        if exceeded:
+            try:
+                conn = self._get_db_connection()
+                if conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            INSERT INTO abuse_history (ip_address, service, attack_type, blocked)
+                            VALUES (%s, %s, %s, %s)
+                        """, (ip, service, attack_type, True))
+                    conn.commit()
+                    conn.close()
+            except Exception as e:
+                print(f"[MONITOR] Error recording abuse history: {e}")
+        
+        return exceeded
     
     def _block_ip(self, ip, service, attack_type, reason):
         """Block an IP address"""
@@ -298,8 +315,39 @@ class LogMonitor:
         except:
             return None
     
+    def _get_service_config(self, service_name):
+        """Get service configuration from database"""
+        conn = self._get_db_connection()
+        if not conn:
+            return None
+        
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT enabled, threshold, duration_minutes
+                    FROM monitored_services
+                    WHERE service_name = %s
+                """, (service_name,))
+                result = cursor.fetchone()
+                return result
+        except Exception as e:
+            print(f"[MONITOR] Error getting service config for {service_name}: {e}")
+            return None
+        finally:
+            conn.close()
+    
     def _monitor_service(self, service_name, config):
         """Monitor a specific service"""
+        # Check if service is enabled in database
+        service_config = self._get_service_config(service_name)
+        if service_config and not service_config.get('enabled', True):
+            return  # Service is disabled
+        
+        # Use database threshold and duration if available
+        threshold = service_config.get('threshold', config.get('threshold', 5)) if service_config else config.get('threshold', 5)
+        duration_minutes = service_config.get('duration_minutes', config.get('window', 300) // 60) if service_config else config.get('window', 300) // 60
+        window_seconds = duration_minutes * 60
+        
         log_paths = config.get('log_paths', [])
         patterns = config.get('patterns', [])
         
@@ -321,9 +369,9 @@ class LogMonitor:
                 for pattern, attack_type in patterns:
                     ip = self._extract_ip_from_line(line, pattern)
                     if ip and self._is_valid_ip(ip):
-                        # Check threshold
-                        if self._check_threshold(ip, service_name, attack_type):
-                            reason = f"Exceeded threshold ({config.get('threshold', 5)} attempts in {config.get('window', 300)}s)"
+                        # Check threshold with database settings
+                        if self._check_threshold(ip, service_name, attack_type, threshold, window_seconds):
+                            reason = f"Exceeded threshold ({threshold} attempts in {duration_minutes} minutes)"
                             self._block_ip(ip, service_name, attack_type, reason)
     
     def start_monitoring(self, services=None, interval=30):
@@ -337,9 +385,31 @@ class LogMonitor:
         def monitor_loop():
             while self.monitoring:
                 try:
-                    services_to_monitor = services or self.attack_patterns.keys()
+                    # Get enabled services from database
+                    conn = self._get_db_connection()
+                    enabled_services = set()
+                    if conn:
+                        try:
+                            with conn.cursor() as cursor:
+                                cursor.execute("""
+                                    SELECT service_name FROM monitored_services WHERE enabled = TRUE
+                                """)
+                                enabled_services = {row[0] for row in cursor.fetchall()}
+                        except:
+                            pass
+                        finally:
+                            conn.close()
                     
-                    for service_name in services_to_monitor:
+                    # If no services in DB, use provided list or all services
+                    if not enabled_services:
+                        enabled_services = set(services) if services else set(self.attack_patterns.keys())
+                    else:
+                        # Filter by provided services list if specified
+                        if services:
+                            enabled_services = enabled_services.intersection(set(services))
+                    
+                    # Monitor only enabled services
+                    for service_name in enabled_services:
                         if service_name in self.attack_patterns:
                             self._monitor_service(service_name, self.attack_patterns[service_name])
                     

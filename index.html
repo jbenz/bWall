@@ -244,8 +244,8 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#" data-tab="url-lists">
-                            <i class="bi bi-link-45deg me-2"></i>URL Lists
+                        <a class="nav-link" href="#" data-tab="crowdsource">
+                            <i class="bi bi-people me-2"></i>Crowdsource
                         </a>
                     </li>
                     <li class="nav-item">
@@ -376,12 +376,24 @@
                     </div>
 
                     <div class="card">
-                        <div class="card-header d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0">Whitelist Entries</h5>
-                            <div>
-                                <button class="btn btn-sm btn-outline-primary" onclick="loadWhitelist()">
-                                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-                                </button>
+                        <div class="card-header">
+                            <div class="row align-items-center">
+                                <div class="col-md-4">
+                                    <h5 class="mb-0">Whitelist Entries</h5>
+                                </div>
+                                <div class="col-md-8">
+                                    <div class="row g-2">
+                                        <div class="col-md-7">
+                                            <input type="text" class="form-control form-control-sm" id="whitelist-search" 
+                                                   placeholder="Search IP address..." onkeyup="debounceSearch('whitelist')">
+                                        </div>
+                                        <div class="col-md-5">
+                                            <button class="btn btn-sm btn-outline-primary w-100" onclick="loadWhitelist()">
+                                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <div class="card-body">
@@ -403,6 +415,9 @@
                                     </tbody>
                                 </table>
                             </div>
+                            <div id="whitelist-pagination" class="mt-3">
+                                <!-- Pagination controls will be inserted here -->
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -417,12 +432,33 @@
                     </div>
 
                     <div class="card">
-                        <div class="card-header d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0">Blacklist Entries</h5>
-                            <div>
-                                <button class="btn btn-sm btn-outline-primary" onclick="loadBlacklist()">
-                                    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-                                </button>
+                        <div class="card-header">
+                            <div class="row align-items-center">
+                                <div class="col-md-4">
+                                    <h5 class="mb-0">Blacklist Entries</h5>
+                                </div>
+                                <div class="col-md-8">
+                                    <div class="row g-2">
+                                        <div class="col-md-4">
+                                            <select class="form-select form-select-sm" id="blacklist-source-filter" onchange="loadBlacklist()">
+                                                <option value="">All Sources</option>
+                                                <option value="auto-monitoring">Active Monitoring</option>
+                                                <option value="crowdsource">Crowdsource</option>
+                                                <option value="manual">Manual</option>
+                                                <option value="permaban">Permanent Ban</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-5">
+                                            <input type="text" class="form-control form-control-sm" id="blacklist-search" 
+                                                   placeholder="Search IP address..." onkeyup="debounceSearch('blacklist')">
+                                        </div>
+                                        <div class="col-md-3">
+                                            <button class="btn btn-sm btn-outline-primary w-100" onclick="loadBlacklist()">
+                                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <div class="card-body">
@@ -433,6 +469,7 @@
                                             <th>ID</th>
                                             <th>IP Address/CIDR</th>
                                             <th>Description</th>
+                                            <th>Source</th>
                                             <th>AbuseIPDB</th>
                                             <th>Created</th>
                                             <th>Actions</th>
@@ -440,10 +477,13 @@
                                     </thead>
                                     <tbody id="blacklist-table">
                                         <tr>
-                                            <td colspan="6" class="text-center text-muted">Loading...</td>
+                                            <td colspan="7" class="text-center text-muted">Loading...</td>
                                         </tr>
                                     </tbody>
                                 </table>
+                            </div>
+                            <div id="blacklist-pagination" class="mt-3">
+                                <!-- Pagination controls will be inserted here -->
                             </div>
                         </div>
                     </div>
@@ -502,30 +542,15 @@
                         </button>
                     </div>
 
-                    <div class="card">
-                        <div class="card-header">
-                            <h5 class="mb-0">Current Rules</h5>
-                        </div>
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-hover">
-                                    <thead>
-                                        <tr>
-                                            <th>Chain</th>
-                                            <th>Target</th>
-                                            <th>Protocol</th>
-                                            <th>Source</th>
-                                            <th>Destination</th>
-                                            <th>Options</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="rules-table">
-                                        <tr>
-                                            <td colspan="6" class="text-center text-muted">Loading...</td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                            </div>
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <strong>Chain-based View:</strong> Click on any chain to expand and view its rules. This hierarchical view makes it easier to navigate large rule sets.
+                    </div>
+
+                    <div id="rules-chains-container">
+                        <div class="text-center text-muted py-5">
+                            <i class="bi bi-hourglass-split fs-1 d-block mb-2"></i>
+                            Loading chains...
                         </div>
                     </div>
                 </div>
@@ -1057,25 +1082,25 @@
                     </div>
                 </div>
 
-                <!-- URL Lists Tab -->
-                <div id="url-lists-tab" class="tab-content" style="display: none;">
+                <!-- Crowdsource Tab -->
+                <div id="crowdsource-tab" class="tab-content" style="display: none;">
                     <div class="d-flex justify-content-between align-items-center mb-4">
-                        <h2 class="mb-0">URL-Based IP Lists</h2>
-                        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addUrlListModal">
-                            <i class="bi bi-plus-circle me-2"></i>Add URL List
+                        <h2 class="mb-0">Crowdsource IP Lists</h2>
+                        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addCrowdsourceModal">
+                            <i class="bi bi-plus-circle me-2"></i>Add Crowdsource List
                         </button>
                     </div>
 
                     <div class="alert alert-info">
                         <i class="bi bi-info-circle me-2"></i>
-                        <strong>URL Lists:</strong> Import and synchronize IP addresses from remote URLs. 
+                        <strong>Crowdsource Lists:</strong> Import and synchronize IP addresses from community-maintained blacklists and threat intelligence feeds. 
                         Lists should contain one IP address or CIDR subnet per line.
                     </div>
 
                     <div class="card">
                         <div class="card-header d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0">Configured URL Lists</h5>
-                            <button class="btn btn-sm btn-outline-primary" onclick="loadUrlLists()">
+                            <h5 class="mb-0">Configured Crowdsource Lists</h5>
+                            <button class="btn btn-sm btn-outline-primary" onclick="loadCrowdsourceLists()">
                                 <i class="bi bi-arrow-clockwise me-1"></i>Refresh
                             </button>
                         </div>
@@ -1094,7 +1119,7 @@
                                             <th>Actions</th>
                                         </tr>
                                     </thead>
-                                    <tbody id="url-lists-table">
+                                    <tbody id="crowdsource-table">
                                         <tr>
                                             <td colspan="8" class="text-center text-muted">Loading...</td>
                                         </tr>
@@ -1334,9 +1359,44 @@
                                             </div>
                                         </div>
                                         <div class="mb-3">
-                                            <label class="form-label">Monitor Services (comma-separated)</label>
-                                            <input type="text" class="form-control" id="monitor-services" placeholder="ssh,apache,nginx,xrdp">
-                                            <small class="form-text text-muted">Leave empty to monitor all configured services</small>
+                                            <label class="form-label">Default Threshold (failed attempts)</label>
+                                            <input type="number" class="form-control" id="monitor-threshold" value="5" min="1" max="100">
+                                            <small class="form-text text-muted">Number of failed attempts before blocking</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Default Duration (minutes)</label>
+                                            <input type="number" class="form-control" id="monitor-duration" value="60" min="1" max="1440">
+                                            <small class="form-text text-muted">Time window for counting failed attempts</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">History Retention</label>
+                                            <select class="form-select" id="history-retention">
+                                                <option value="30">30 Days</option>
+                                                <option value="90">90 Days</option>
+                                                <option value="365">1 Year</option>
+                                                <option value="0">Full Archive (No Pruning)</option>
+                                            </select>
+                                            <small class="form-text text-muted">How long to keep monitoring and abuse history records</small>
+                                        </div>
+                                        <div class="mb-3">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="enable-permaban">
+                                                <label class="form-check-label" for="enable-permaban">
+                                                    Enable Permanent Ban
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div id="permaban-settings" style="display: none;">
+                                            <div class="mb-3">
+                                                <label class="form-label">Permanent Ban Threshold (abuse score)</label>
+                                                <input type="number" class="form-control" id="permaban-threshold" value="10" min="1" max="1000">
+                                                <small class="form-text text-muted">IPs with abuse score above this will be permanently banned</small>
+                                            </div>
+                                        </div>
+                                        <hr>
+                                        <h6>Monitored Services</h6>
+                                        <div id="monitored-services-list" class="mb-3">
+                                            <div class="text-muted">Loading services...</div>
                                         </div>
                                         <button type="button" class="btn btn-primary" onclick="saveMonitoringSettings()">
                                             <i class="bi bi-save me-2"></i>Save Monitoring Settings
@@ -1541,63 +1601,70 @@
         </div>
     </div>
 
-    <!-- Add URL List Modal -->
-    <div class="modal fade" id="addUrlListModal" tabindex="-1">
+    <!-- Add Crowdsource List Modal -->
+    <div class="modal fade" id="addCrowdsourceModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">Add URL-Based IP List</h5>
+                    <h5 class="modal-title">Add Crowdsource IP List</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <form id="url-list-form">
+                    <form id="crowdsource-form">
                         <div class="mb-3">
                             <label class="form-label">List Name</label>
-                            <input type="text" class="form-control" id="url-list-name" placeholder="e.g., Spamhaus DROP List" required>
+                            <input type="text" class="form-control" id="crowdsource-name" placeholder="e.g., 3FIFTYnet Abusive Subnets" required>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">URL</label>
-                            <input type="url" class="form-control" id="url-list-url" placeholder="https://example.com/blocklist.txt" required>
+                            <input type="url" class="form-control" id="crowdsource-url" placeholder="https://raw.githubusercontent.com/..." required>
                             <small class="form-text text-muted">URL should return a text file with one IP or CIDR per line</small>
+                            <div class="mt-2">
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="load3FIFTYnetList()">
+                                    <i class="bi bi-star me-1"></i>Load 3FIFTYnet List
+                                </button>
+                            </div>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">List Type</label>
-                            <select class="form-select" id="url-list-type" required>
+                            <select class="form-select" id="crowdsource-type" required>
                                 <option value="whitelist">Whitelist</option>
                                 <option value="blacklist" selected>Blacklist</option>
                             </select>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Description</label>
-                            <textarea class="form-control" id="url-list-desc" rows="2" placeholder="Optional description"></textarea>
+                            <textarea class="form-control" id="crowdsource-desc" rows="2" placeholder="Optional description"></textarea>
                         </div>
                         <div class="mb-3">
                             <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="url-list-enabled" checked>
-                                <label class="form-check-label" for="url-list-enabled">
+                                <input class="form-check-input" type="checkbox" id="crowdsource-enabled" checked>
+                                <label class="form-check-label" for="crowdsource-enabled">
                                     Enabled
                                 </label>
                             </div>
                         </div>
                         <div class="mb-3">
                             <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="url-list-auto-sync">
-                                <label class="form-check-label" for="url-list-auto-sync">
+                                <input class="form-check-input" type="checkbox" id="crowdsource-auto-sync">
+                                <label class="form-check-label" for="crowdsource-auto-sync">
                                     Auto-sync (periodically update from URL)
                                 </label>
                             </div>
                         </div>
-                        <div class="mb-3" id="url-sync-interval-group" style="display: none;">
+                        <div class="mb-3" id="crowdsource-sync-interval-group" style="display: none;">
                             <label class="form-label">Sync Interval (seconds)</label>
-                            <input type="number" class="form-control" id="url-sync-interval" value="3600" min="60">
+                            <input type="number" class="form-control" id="crowdsource-sync-interval" value="3600" min="60">
                             <small class="form-text text-muted">Minimum: 60 seconds (1 minute)</small>
                         </div>
                     </form>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-primary" onclick="addUrlList()">Add List</button>
+                    <button type="button" class="btn btn-primary" onclick="addCrowdsourceList()">Add List</button>
                 </div>
+            </div>
+        </div>
             </div>
         </div>
     </div>

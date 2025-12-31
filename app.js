@@ -408,10 +408,10 @@ function formatBytes(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// URL Lists Functions
+// Crowdsource Lists Functions
 document.addEventListener('DOMContentLoaded', function() {
-    const autoSyncCheckbox = document.getElementById('url-list-auto-sync');
-    const syncIntervalGroup = document.getElementById('url-sync-interval-group');
+    const autoSyncCheckbox = document.getElementById('crowdsource-auto-sync');
+    const syncIntervalGroup = document.getElementById('crowdsource-sync-interval-group');
     
     if (autoSyncCheckbox && syncIntervalGroup) {
         autoSyncCheckbox.addEventListener('change', function() {
@@ -420,15 +420,25 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-async function loadUrlLists() {
+function load3FIFTYnetList() {
+    document.getElementById('crowdsource-name').value = '3FIFTYnet Abusive Subnets';
+    document.getElementById('crowdsource-url').value = 'https://raw.githubusercontent.com/3FIFTYnet/dbl/refs/heads/main/abusive_subnet_24_blacklist.txt';
+    document.getElementById('crowdsource-type').value = 'blacklist';
+    document.getElementById('crowdsource-desc').value = 'Community-maintained list of abusive /24 subnets from 3FIFTYnet. Based on known and verifiable abusive and excessive network traffic.';
+    document.getElementById('crowdsource-auto-sync').checked = true;
+    document.getElementById('crowdsource-sync-interval-group').style.display = 'block';
+    showAlert('3FIFTYnet list loaded. Review settings and click "Add List" to import.', 'info');
+}
+
+async function loadCrowdsourceLists() {
     try {
         const response = await fetch(`${API_BASE}/url-lists`, fetchOptions);
         if (response.ok) {
             const lists = await response.json();
-            const tbody = document.getElementById('url-lists-table');
+            const tbody = document.getElementById('crowdsource-table');
             
             if (lists.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No URL lists configured</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No crowdsource lists configured. Click "Add Crowdsource List" to get started.</td></tr>';
                 return;
             }
             
@@ -459,13 +469,13 @@ async function loadUrlLists() {
                         <td><small>${lastSync}</small></td>
                         <td>${autoSyncBadge}</td>
                         <td>
-                            <button class="btn btn-sm btn-primary" onclick="syncUrlList(${list.id})" title="Sync Now">
+                            <button class="btn btn-sm btn-primary" onclick="syncCrowdsourceList(${list.id})" title="Sync Now">
                                 <i class="bi bi-arrow-clockwise"></i>
                             </button>
-                            <button class="btn btn-sm btn-warning" onclick="toggleUrlList(${list.id}, ${!list.enabled})" title="${list.enabled ? 'Disable' : 'Enable'}">
+                            <button class="btn btn-sm btn-warning" onclick="toggleCrowdsourceList(${list.id}, ${!list.enabled})" title="${list.enabled ? 'Disable' : 'Enable'}">
                                 <i class="bi bi-${list.enabled ? 'pause' : 'play'}-fill"></i>
                             </button>
-                            <button class="btn btn-sm btn-danger" onclick="deleteUrlList(${list.id})" title="Delete">
+                            <button class="btn btn-sm btn-danger" onclick="deleteCrowdsourceList(${list.id})" title="Delete">
                                 <i class="bi bi-trash"></i>
                             </button>
                         </td>
@@ -474,20 +484,20 @@ async function loadUrlLists() {
             }).join('');
         }
     } catch (error) {
-        console.error('Error loading URL lists:', error);
-        document.getElementById('url-lists-table').innerHTML = 
-            '<tr><td colspan="8" class="text-center text-danger">Error loading URL lists</td></tr>';
+        console.error('Error loading crowdsource lists:', error);
+        document.getElementById('crowdsource-table').innerHTML = 
+            '<tr><td colspan="8" class="text-center text-danger">Error loading crowdsource lists</td></tr>';
     }
 }
 
-async function addUrlList() {
-    const name = document.getElementById('url-list-name').value.trim();
-    const url = document.getElementById('url-list-url').value.trim();
-    const listType = document.getElementById('url-list-type').value;
-    const description = document.getElementById('url-list-desc').value.trim();
-    const enabled = document.getElementById('url-list-enabled').checked;
-    const autoSync = document.getElementById('url-list-auto-sync').checked;
-    const syncInterval = parseInt(document.getElementById('url-sync-interval').value) || 3600;
+async function addCrowdsourceList() {
+    const name = document.getElementById('crowdsource-name').value.trim();
+    const url = document.getElementById('crowdsource-url').value.trim();
+    const listType = document.getElementById('crowdsource-type').value;
+    const description = document.getElementById('crowdsource-desc').value.trim();
+    const enabled = document.getElementById('crowdsource-enabled').checked;
+    const autoSync = document.getElementById('crowdsource-auto-sync').checked;
+    const syncInterval = parseInt(document.getElementById('crowdsource-sync-interval').value) || 3600;
     
     if (!name || !url) {
         showAlert('Name and URL are required', 'warning');
@@ -517,28 +527,28 @@ async function addUrlList() {
         
         const result = await response.json();
         if (response.ok) {
-            showAlert('URL list added successfully. Syncing now...', 'success');
-            bootstrap.Modal.getInstance(document.getElementById('addUrlListModal')).hide();
-            document.getElementById('url-list-form').reset();
-            document.getElementById('url-sync-interval-group').style.display = 'none';
+            showAlert('Crowdsource list added successfully. Syncing now...', 'success');
+            bootstrap.Modal.getInstance(document.getElementById('addCrowdsourceModal')).hide();
+            document.getElementById('crowdsource-form').reset();
+            document.getElementById('crowdsource-sync-interval-group').style.display = 'none';
             
             // Auto-sync after adding
             if (result.id) {
                 setTimeout(() => {
-                    syncUrlList(result.id);
-                    loadUrlLists();
+                    syncCrowdsourceList(result.id);
+                    loadCrowdsourceLists();
                 }, 500);
             }
         } else {
-            showAlert(result.error || 'Error adding URL list', 'danger');
+            showAlert(result.error || 'Error adding crowdsource list', 'danger');
         }
     } catch (error) {
-        console.error('Error adding URL list:', error);
-        showAlert('Error adding URL list', 'danger');
+        console.error('Error adding crowdsource list:', error);
+        showAlert('Error adding crowdsource list', 'danger');
     }
 }
 
-async function syncUrlList(id) {
+async function syncCrowdsourceList(id) {
     try {
         const response = await fetch(`${API_BASE}/url-lists/${id}/sync`, {
             method: 'POST',
@@ -548,20 +558,20 @@ async function syncUrlList(id) {
         const result = await response.json();
         if (response.ok) {
             showAlert(`Sync completed: ${result.entries_added || 0} entries added`, 'success');
-            loadUrlLists();
+            loadCrowdsourceLists();
             refreshStats();
             if (result.list_type === 'whitelist') loadWhitelist();
             if (result.list_type === 'blacklist') loadBlacklist();
         } else {
-            showAlert(result.error || 'Error syncing URL list', 'danger');
+            showAlert(result.error || 'Error syncing crowdsource list', 'danger');
         }
     } catch (error) {
-        console.error('Error syncing URL list:', error);
-        showAlert('Error syncing URL list', 'danger');
+        console.error('Error syncing crowdsource list:', error);
+        showAlert('Error syncing crowdsource list', 'danger');
     }
 }
 
-async function toggleUrlList(id, enabled) {
+async function toggleCrowdsourceList(id, enabled) {
     try {
         const response = await fetch(`${API_BASE}/url-lists/${id}`, {
             method: 'PATCH',
@@ -572,19 +582,19 @@ async function toggleUrlList(id, enabled) {
         
         const result = await response.json();
         if (response.ok) {
-            showAlert(`URL list ${enabled ? 'enabled' : 'disabled'}`, 'success');
-            loadUrlLists();
+            showAlert(`Crowdsource list ${enabled ? 'enabled' : 'disabled'}`, 'success');
+            loadCrowdsourceLists();
         } else {
-            showAlert(result.error || 'Error updating URL list', 'danger');
+            showAlert(result.error || 'Error updating crowdsource list', 'danger');
         }
     } catch (error) {
-        console.error('Error toggling URL list:', error);
-        showAlert('Error updating URL list', 'danger');
+        console.error('Error toggling crowdsource list:', error);
+        showAlert('Error updating crowdsource list', 'danger');
     }
 }
 
-async function deleteUrlList(id) {
-    if (!confirm('Are you sure you want to delete this URL list? This will not remove the imported IPs.')) {
+async function deleteCrowdsourceList(id) {
+    if (!confirm('Are you sure you want to delete this crowdsource list? This will not remove the imported IPs.')) {
         return;
     }
     
@@ -596,14 +606,14 @@ async function deleteUrlList(id) {
         
         const result = await response.json();
         if (response.ok) {
-            showAlert('URL list deleted successfully', 'success');
-            loadUrlLists();
+            showAlert('Crowdsource list deleted successfully', 'success');
+            loadCrowdsourceLists();
         } else {
-            showAlert(result.error || 'Error deleting URL list', 'danger');
+            showAlert(result.error || 'Error deleting crowdsource list', 'danger');
         }
     } catch (error) {
-        console.error('Error deleting URL list:', error);
-        showAlert('Error deleting URL list', 'danger');
+        console.error('Error deleting crowdsource list:', error);
+        showAlert('Error deleting crowdsource list', 'danger');
     }
 }
 
@@ -766,17 +776,12 @@ async function loadSystemSettings() {
                 document.getElementById('oidc-redirect-uri').value = settings.oidc.redirect_uri || '';
                 document.getElementById('oidc-post-logout-uri').value = settings.oidc.post_logout_uri || '';
             }
-            
-            // Monitoring settings
-            if (settings.monitoring) {
-                document.getElementById('enable-log-monitoring').checked = settings.monitoring.enabled || false;
-                document.getElementById('monitor-services').value = settings.monitoring.services || '';
-            }
         }
         
-        // Load appearance and proxy settings
+        // Load appearance, proxy, and monitoring settings
         await loadAppearanceSettings();
         await loadProxySettings();
+        await loadMonitoringSettings();
     } catch (error) {
         console.error('Error loading system settings:', error);
     }
@@ -907,32 +912,149 @@ async function saveOIDCSettings() {
     }
 }
 
+async function loadMonitoringSettings() {
+    try {
+        // Load monitoring settings
+        const settingsResponse = await fetch(`${API_BASE}/monitoring/settings`, fetchOptions);
+        if (settingsResponse.ok) {
+            const settings = await settingsResponse.json();
+            
+            document.getElementById('enable-log-monitoring').checked = settings.enabled || false;
+            document.getElementById('monitor-threshold').value = settings.threshold || 5;
+            document.getElementById('monitor-duration').value = settings.duration || 60;
+            document.getElementById('history-retention').value = settings.history_retention || 90;
+            document.getElementById('enable-permaban').checked = settings.permaban_enabled || false;
+            document.getElementById('permaban-threshold').value = settings.permaban_threshold || 10;
+            
+            // Show/hide permaban settings
+            const permabanSettings = document.getElementById('permaban-settings');
+            if (permabanSettings) {
+                permabanSettings.style.display = settings.permaban_enabled ? 'block' : 'none';
+            }
+        }
+        
+        // Load monitored services
+        const servicesResponse = await fetch(`${API_BASE}/monitoring/services`, fetchOptions);
+        if (servicesResponse.ok) {
+            const services = await servicesResponse.json();
+            const servicesList = document.getElementById('monitored-services-list');
+            
+            if (servicesList && services.length > 0) {
+                servicesList.innerHTML = services.map(service => `
+                    <div class="card mb-2">
+                        <div class="card-body p-2">
+                            <div class="row align-items-center">
+                                <div class="col-md-4">
+                                    <div class="form-check">
+                                        <input class="form-check-input service-toggle" type="checkbox" 
+                                               id="service-${service.service_name}" 
+                                               data-service="${service.service_name}"
+                                               ${service.enabled ? 'checked' : ''}>
+                                        <label class="form-check-label" for="service-${service.service_name}">
+                                            <strong>${service.service_name}</strong>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">Threshold</label>
+                                    <input type="number" class="form-control form-control-sm service-threshold" 
+                                           data-service="${service.service_name}"
+                                           value="${service.threshold || 5}" min="1" max="100">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">Duration (min)</label>
+                                    <input type="number" class="form-control form-control-sm service-duration" 
+                                           data-service="${service.service_name}"
+                                           value="${service.duration_minutes || 60}" min="1" max="1440">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+        }
+    } catch (error) {
+        console.error('Error loading monitoring settings:', error);
+    }
+}
+
 async function saveMonitoringSettings() {
     const enabled = document.getElementById('enable-log-monitoring').checked;
-    const services = document.getElementById('monitor-services').value.trim();
+    const threshold = parseInt(document.getElementById('monitor-threshold').value) || 5;
+    const duration = parseInt(document.getElementById('monitor-duration').value) || 60;
+    const historyRetention = parseInt(document.getElementById('history-retention').value) || 90;
+    const permabanEnabled = document.getElementById('enable-permaban').checked;
+    const permabanThreshold = parseInt(document.getElementById('permaban-threshold').value) || 10;
+    
+    // Collect service configurations
+    const services = [];
+    document.querySelectorAll('.service-toggle').forEach(checkbox => {
+        const serviceName = checkbox.dataset.service;
+        const thresholdInput = document.querySelector(`.service-threshold[data-service="${serviceName}"]`);
+        const durationInput = document.querySelector(`.service-duration[data-service="${serviceName}"]`);
+        
+        services.push({
+            service_name: serviceName,
+            enabled: checkbox.checked,
+            threshold: parseInt(thresholdInput?.value) || 5,
+            duration_minutes: parseInt(durationInput?.value) || 60
+        });
+    });
     
     try {
-        const response = await fetch(`${API_BASE}/settings/monitoring`, {
+        // Save monitoring settings
+        const settingsResponse = await fetch(`${API_BASE}/monitoring/settings`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 enabled: enabled,
-                services: services
+                threshold: threshold,
+                duration: duration,
+                history_retention: historyRetention,
+                permaban_enabled: permabanEnabled,
+                permaban_threshold: permabanThreshold
             }),
             credentials: 'include'
         });
         
-        const result = await response.json();
-        if (response.ok) {
+        // Save service configurations
+        const servicesResponse = await fetch(`${API_BASE}/monitoring/services`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ services: services }),
+            credentials: 'include'
+        });
+        
+        if (settingsResponse.ok && servicesResponse.ok) {
             showAlert('Monitoring settings saved. Restart the server for changes to take effect.', 'success');
+            // Optionally trigger history pruning
+            if (historyRetention > 0) {
+                fetch(`${API_BASE}/monitoring/prune-history`, {
+                    method: 'POST',
+                    credentials: 'include'
+                }).catch(() => {}); // Silent fail
+            }
         } else {
-            showAlert(result.error || 'Error saving monitoring settings', 'danger');
+            const error = await settingsResponse.json().catch(() => ({ error: 'Unknown error' }));
+            showAlert(error.error || 'Error saving monitoring settings', 'danger');
         }
     } catch (error) {
         console.error('Error saving monitoring settings:', error);
         showAlert('Error saving monitoring settings', 'danger');
     }
 }
+
+// Setup permaban toggle
+document.addEventListener('DOMContentLoaded', function() {
+    const enablePermabanCheckbox = document.getElementById('enable-permaban');
+    const permabanSettings = document.getElementById('permaban-settings');
+    
+    if (enablePermabanCheckbox && permabanSettings) {
+        enablePermabanCheckbox.addEventListener('change', function() {
+            permabanSettings.style.display = this.checked ? 'block' : 'none';
+        });
+    }
+});
 
 // Tab Navigation
 document.addEventListener('DOMContentLoaded', function() {
@@ -1394,9 +1516,9 @@ function switchTab(tabName) {
                 console.log('Loading reports data...');
                 loadReports();
                 break;
-            case 'url-lists':
-                console.log('Loading URL lists data...');
-                loadUrlLists();
+            case 'crowdsource':
+                console.log('Loading crowdsource lists data...');
+                loadCrowdsourceLists();
                 break;
             case 'abuseipdb-settings':
                 console.log('Loading AbuseIPDB settings...');
@@ -1472,14 +1594,38 @@ async function refreshStats() {
     }
 }
 
-async function loadActivityLog() {
+async function loadActivityLog(page = null) {
     try {
-        const response = await fetch(`${API_BASE}/activity`, fetchOptions);
-        const activities = await response.json();
+        if (page !== null) {
+            activityPagination.page = page;
+        }
+        
+        const params = new URLSearchParams({
+            page: activityPagination.page,
+            per_page: activityPagination.per_page
+        });
+        
+        const response = await fetch(`${API_BASE}/activity?${params}`, fetchOptions);
+        const data = await response.json();
         
         const tbody = document.getElementById('activity-log');
+        
+        if (data.error) {
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">Error: ${data.error}</td></tr>`;
+            return;
+        }
+        
+        const activities = data.entries || [];
+        activityPagination = {
+            page: data.page || 1,
+            per_page: data.per_page || 50,
+            total: data.total || 0,
+            pages: data.pages || 0
+        };
+        
         if (activities.length === 0) {
             tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No recent activity</td></tr>';
+            // Activity log pagination would go here if we add it to the UI
             return;
         }
         
@@ -1497,15 +1643,154 @@ async function loadActivityLog() {
     }
 }
 
+// Pagination rendering function
+function renderPagination(containerId, pagination, loadFunction) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    if (pagination.pages <= 1) {
+        container.innerHTML = `<div class="text-muted text-center">Showing ${pagination.total} entries</div>`;
+        return;
+    }
+    
+    const { page, pages, total, per_page } = pagination;
+    const start = (page - 1) * per_page + 1;
+    const end = Math.min(page * per_page, total);
+    
+    let paginationHTML = `
+        <div class="d-flex justify-content-between align-items-center">
+            <div class="text-muted">
+                Showing ${start} to ${end} of ${total} entries
+            </div>
+            <nav>
+                <ul class="pagination pagination-sm mb-0">
+    `;
+    
+    // Previous button
+    if (page > 1) {
+        paginationHTML += `
+            <li class="page-item">
+                <a class="page-link" href="#" onclick="${loadFunction}(${page - 1}); return false;">Previous</a>
+            </li>
+        `;
+    } else {
+        paginationHTML += `
+            <li class="page-item disabled">
+                <span class="page-link">Previous</span>
+            </li>
+        `;
+    }
+    
+    // Page numbers (show up to 7 pages around current)
+    const maxPagesToShow = 7;
+    let startPage = Math.max(1, page - Math.floor(maxPagesToShow / 2));
+    let endPage = Math.min(pages, startPage + maxPagesToShow - 1);
+    
+    if (endPage - startPage < maxPagesToShow - 1) {
+        startPage = Math.max(1, endPage - maxPagesToShow + 1);
+    }
+    
+    if (startPage > 1) {
+        paginationHTML += `
+            <li class="page-item">
+                <a class="page-link" href="#" onclick="${loadFunction}(1); return false;">1</a>
+            </li>
+        `;
+        if (startPage > 2) {
+            paginationHTML += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+        }
+    }
+    
+    for (let i = startPage; i <= endPage; i++) {
+        if (i === page) {
+            paginationHTML += `
+                <li class="page-item active">
+                    <span class="page-link">${i}</span>
+                </li>
+            `;
+        } else {
+            paginationHTML += `
+                <li class="page-item">
+                    <a class="page-link" href="#" onclick="${loadFunction}(${i}); return false;">${i}</a>
+                </li>
+            `;
+        }
+    }
+    
+    if (endPage < pages) {
+        if (endPage < pages - 1) {
+            paginationHTML += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+        }
+        paginationHTML += `
+            <li class="page-item">
+                <a class="page-link" href="#" onclick="${loadFunction}(${pages}); return false;">${pages}</a>
+            </li>
+        `;
+    }
+    
+    // Next button
+    if (page < pages) {
+        paginationHTML += `
+            <li class="page-item">
+                <a class="page-link" href="#" onclick="${loadFunction}(${page + 1}); return false;">Next</a>
+            </li>
+        `;
+    } else {
+        paginationHTML += `
+            <li class="page-item disabled">
+                <span class="page-link">Next</span>
+            </li>
+        `;
+    }
+    
+    paginationHTML += `
+                </ul>
+            </nav>
+        </div>
+    `;
+    
+    container.innerHTML = paginationHTML;
+}
+
 // Whitelist Functions
-async function loadWhitelist() {
+async function loadWhitelist(page = null) {
     try {
-        const response = await fetch(`${API_BASE}/whitelist`, fetchOptions);
-        const entries = await response.json();
+        if (page !== null) {
+            whitelistPagination.page = page;
+        }
+        
+        const search = document.getElementById('whitelist-search')?.value.trim() || '';
+        
+        const params = new URLSearchParams({
+            page: whitelistPagination.page,
+            per_page: whitelistPagination.per_page
+        });
+        
+        if (search) {
+            params.append('search', search);
+        }
+        
+        const response = await fetch(`${API_BASE}/whitelist?${params}`, fetchOptions);
+        const data = await response.json();
         
         const tbody = document.getElementById('whitelist-table');
+        
+        if (data.error) {
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">Error: ${data.error}</td></tr>`;
+            return;
+        }
+        
+        const entries = data.entries || [];
+        whitelistPagination = {
+            page: data.page || 1,
+            per_page: data.per_page || 50,
+            total: data.total || 0,
+            pages: data.pages || 0
+        };
+        
         if (entries.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No whitelist entries</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No whitelist entries found</td></tr>';
+            renderPagination('whitelist-pagination', whitelistPagination, 'loadWhitelist');
             return;
         }
         
@@ -1522,6 +1807,10 @@ async function loadWhitelist() {
                 </td>
             </tr>
         `).join('');
+        
+        // Render pagination
+        renderPagination('whitelist-pagination', whitelistPagination, 'loadWhitelist');
+        
     } catch (error) {
         console.error('Error loading whitelist:', error);
         showAlert('Error loading whitelist', 'danger');
@@ -1585,42 +1874,107 @@ async function deleteWhitelistEntry(id) {
     }
 }
 
+// Pagination state
+let blacklistPagination = { page: 1, per_page: 50, total: 0, pages: 0 };
+let whitelistPagination = { page: 1, per_page: 50, total: 0, pages: 0 };
+let activityPagination = { page: 1, per_page: 50, total: 0, pages: 0 };
+
+// Debounce search function
+let searchTimeout;
+function debounceSearch(type) {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+        if (type === 'blacklist') {
+            blacklistPagination.page = 1; // Reset to first page
+            loadBlacklist();
+        } else if (type === 'whitelist') {
+            whitelistPagination.page = 1;
+            loadWhitelist();
+        }
+    }, 500);
+}
+
 // Blacklist Functions
-async function loadBlacklist() {
+async function loadBlacklist(page = null) {
     try {
-        const response = await fetch(`${API_BASE}/blacklist`, fetchOptions);
-        const entries = await response.json();
+        if (page !== null) {
+            blacklistPagination.page = page;
+        }
+        
+        const sourceFilter = document.getElementById('blacklist-source-filter')?.value || '';
+        const search = document.getElementById('blacklist-search')?.value.trim() || '';
+        
+        const params = new URLSearchParams({
+            page: blacklistPagination.page,
+            per_page: blacklistPagination.per_page
+        });
+        
+        if (sourceFilter) {
+            params.append('source', sourceFilter);
+        }
+        if (search) {
+            params.append('search', search);
+        }
+        
+        const response = await fetch(`${API_BASE}/blacklist?${params}`, fetchOptions);
+        const data = await response.json();
         
         const tbody = document.getElementById('blacklist-table');
-        if (entries.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No blacklist entries</td></tr>';
+        
+        if (data.error) {
+            tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">Error: ${data.error}</td></tr>`;
             return;
         }
         
-        // Check AbuseIPDB status for each entry (async, will update as results come in)
-        tbody.innerHTML = entries.map(entry => `
-            <tr id="blacklist-row-${entry.id}">
-                <td>${entry.id}</td>
-                <td><code>${entry.ip_address}</code></td>
-                <td>${entry.description || '-'}</td>
-                <td id="abuseipdb-${entry.id}">
-                    <button class="btn btn-sm btn-outline-info" onclick="checkAbuseIPDBForEntry('${entry.ip_address}', ${entry.id})" title="Check AbuseIPDB">
-                        <i class="bi bi-search"></i>
-                    </button>
-                </td>
-                <td>${new Date(entry.created_at).toLocaleString()}</td>
-                <td>
-                    <button class="btn btn-sm btn-danger" onclick="deleteBlacklistEntry(${entry.id})">
-                        <i class="bi bi-trash"></i>
-                    </button>
-                </td>
-            </tr>
-        `).join('');
+        const entries = data.entries || [];
+        blacklistPagination = {
+            page: data.page || 1,
+            per_page: data.per_page || 50,
+            total: data.total || 0,
+            pages: data.pages || 0
+        };
         
-        // Optionally pre-check AbuseIPDB for all entries (can be slow, so commented out)
-        // entries.forEach(entry => {
-        //     checkAbuseIPDBForEntry(entry.ip_address, entry.id, false);
-        // });
+        if (entries.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No blacklist entries found</td></tr>';
+            renderPagination('blacklist-pagination', blacklistPagination, 'loadBlacklist');
+            return;
+        }
+        
+        // Map source to badge
+        const sourceBadges = {
+            'auto-monitoring': '<span class="badge bg-warning">Active Monitoring</span>',
+            'crowdsource': '<span class="badge bg-info">Crowdsource</span>',
+            'manual': '<span class="badge bg-secondary">Manual</span>',
+            'permaban': '<span class="badge bg-danger">Permanent Ban</span>',
+            'unknown': '<span class="badge bg-dark">Unknown</span>'
+        };
+        
+        tbody.innerHTML = entries.map(entry => {
+            const source = entry.source || 'unknown';
+            return `
+                <tr id="blacklist-row-${entry.id}">
+                    <td>${entry.id}</td>
+                    <td><code>${entry.ip_address}</code></td>
+                    <td>${entry.description || '-'}</td>
+                    <td>${sourceBadges[source] || sourceBadges['unknown']}</td>
+                    <td id="abuseipdb-${entry.id}">
+                        <button class="btn btn-sm btn-outline-info" onclick="checkAbuseIPDBForEntry('${entry.ip_address}', ${entry.id})" title="Check AbuseIPDB">
+                            <i class="bi bi-search"></i>
+                        </button>
+                    </td>
+                    <td>${new Date(entry.created_at).toLocaleString()}</td>
+                    <td>
+                        <button class="btn btn-sm btn-danger" onclick="deleteBlacklistEntry(${entry.id})">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+        
+        // Render pagination
+        renderPagination('blacklist-pagination', blacklistPagination, 'loadBlacklist');
+        
     } catch (error) {
         console.error('Error loading blacklist:', error);
         showAlert('Error loading blacklist', 'danger');
@@ -1792,31 +2146,179 @@ async function deleteBlacklistEntry(id) {
 }
 
 // Rules Functions
+let expandedChains = new Set();
+
 async function loadRules() {
     try {
-        const response = await fetch(`${API_BASE}/rules`, fetchOptions);
-        const rules = await response.json();
+        const container = document.getElementById('rules-chains-container');
+        container.innerHTML = '<div class="text-center text-muted py-5"><i class="bi bi-hourglass-split fs-1 d-block mb-2"></i>Loading chains...</div>';
         
-        const tbody = document.getElementById('rules-table');
-        if (rules.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No rules found</td></tr>';
+        const response = await fetch(`${API_BASE}/rules`, fetchOptions);
+        const data = await response.json();
+        
+        if (data.error) {
+            container.innerHTML = `<div class="alert alert-danger">Error: ${data.error}</div>`;
             return;
         }
         
-        tbody.innerHTML = rules.map(rule => `
-            <tr>
-                <td><span class="badge bg-primary">${rule.chain || '-'}</span></td>
-                <td>${rule.target || '-'}</td>
-                <td>${rule.protocol || '-'}</td>
-                <td><code>${rule.source || '-'}</code></td>
-                <td><code>${rule.destination || '-'}</code></td>
-                <td>${rule.options || '-'}</td>
-            </tr>
-        `).join('');
+        const chains = data.chains || [];
+        
+        if (chains.length === 0) {
+            container.innerHTML = '<div class="alert alert-warning">No chains found</div>';
+            return;
+        }
+        
+        // Sort chains: bWall chains first, then standard chains
+        const bwallChains = chains.filter(c => c.name.startsWith('BWALL_'));
+        const standardChains = chains.filter(c => !c.name.startsWith('BWALL_'));
+        const sortedChains = [...bwallChains, ...standardChains];
+        
+        container.innerHTML = sortedChains.map(chain => {
+            const isExpanded = expandedChains.has(chain.name);
+            const chainBadgeClass = chain.name.startsWith('BWALL_') ? 'bg-primary' : 
+                                   ['INPUT', 'FORWARD', 'OUTPUT'].includes(chain.name) ? 'bg-success' : 'bg-secondary';
+            
+            // Store chain data for later use
+            if (!window.chainsData) window.chainsData = {};
+            window.chainsData[chain.name] = chain;
+            
+            return `
+                <div class="card mb-3 chain-card" data-chain="${chain.name}">
+                    <div class="card-header d-flex justify-content-between align-items-center" 
+                         style="cursor: pointer;" 
+                         onclick="toggleChain('${chain.name}')">
+                        <div class="d-flex align-items-center">
+                            <i class="bi bi-chevron-${isExpanded ? 'down' : 'right'} me-2"></i>
+                            <span class="badge ${chainBadgeClass} me-2">${chain.name}</span>
+                            <span class="text-muted">${chain.rule_count} rule${chain.rule_count !== 1 ? 's' : ''}</span>
+                        </div>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="event.stopPropagation(); loadChainRules('${chain.name}', true)" title="Refresh chain">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
+                    <div class="card-body chain-rules" id="chain-${chain.name}" style="display: ${isExpanded ? 'block' : 'none'};">
+                        ${isExpanded ? renderChainRules(chain.rules) : '<div class="text-muted text-center py-2">Click to expand</div>'}
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
     } catch (error) {
         console.error('Error loading rules:', error);
-        showAlert('Error loading rules', 'danger');
+        document.getElementById('rules-chains-container').innerHTML = 
+            '<div class="alert alert-danger">Error loading rules: ' + error.message + '</div>';
     }
+}
+
+function toggleChain(chainName) {
+    const chainCard = document.querySelector(`[data-chain="${chainName}"]`);
+    const rulesDiv = document.getElementById(`chain-${chainName}`);
+    const chevron = chainCard.querySelector('.bi-chevron-right, .bi-chevron-down');
+    
+    if (expandedChains.has(chainName)) {
+        expandedChains.delete(chainName);
+        rulesDiv.style.display = 'none';
+        if (chevron) {
+            chevron.classList.remove('bi-chevron-down');
+            chevron.classList.add('bi-chevron-right');
+        }
+        rulesDiv.innerHTML = '<div class="text-muted text-center py-2">Click to expand</div>';
+    } else {
+        expandedChains.add(chainName);
+        rulesDiv.style.display = 'block';
+        if (chevron) {
+            chevron.classList.remove('bi-chevron-right');
+            chevron.classList.add('bi-chevron-down');
+        }
+        
+        // Use cached rules if available, otherwise load from API
+        if (window.chainsData && window.chainsData[chainName] && window.chainsData[chainName].rules) {
+            rulesDiv.innerHTML = renderChainRules(window.chainsData[chainName].rules);
+        } else {
+            loadChainRules(chainName, false);
+        }
+    }
+}
+
+async function loadChainRules(chainName, forceRefresh = false) {
+    const rulesDiv = document.getElementById(`chain-${chainName}`);
+    if (!rulesDiv) return;
+    
+    // Use cached data if available and not forcing refresh
+    if (!forceRefresh && window.chainsData && window.chainsData[chainName] && window.chainsData[chainName].rules) {
+        rulesDiv.innerHTML = renderChainRules(window.chainsData[chainName].rules);
+        return;
+    }
+    
+    rulesDiv.innerHTML = '<div class="text-center text-muted py-3"><i class="bi bi-hourglass-split me-2"></i>Loading rules...</div>';
+    
+    try {
+        const response = await fetch(`${API_BASE}/rules/chain/${chainName}`, fetchOptions);
+        const data = await response.json();
+        
+        if (data.error) {
+            rulesDiv.innerHTML = `<div class="alert alert-danger">Error: ${data.error}</div>`;
+            return;
+        }
+        
+        const rules = data.rules || [];
+        
+        // Update cached data
+        if (window.chainsData && window.chainsData[chainName]) {
+            window.chainsData[chainName].rules = rules;
+            window.chainsData[chainName].rule_count = rules.length;
+        }
+        
+        rulesDiv.innerHTML = renderChainRules(rules);
+    } catch (error) {
+        console.error('Error loading chain rules:', error);
+        rulesDiv.innerHTML = `<div class="alert alert-danger">Error loading rules: ${error.message}</div>`;
+    }
+}
+
+function renderChainRules(rules) {
+    if (rules.length === 0) {
+        return '<div class="text-muted text-center py-3">No rules in this chain</div>';
+    }
+    
+    return `
+        <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">#</th>
+                        <th style="width: 80px;">Packets</th>
+                        <th style="width: 80px;">Bytes</th>
+                        <th style="width: 100px;">Target</th>
+                        <th style="width: 80px;">Protocol</th>
+                        <th style="width: 80px;">Opt</th>
+                        <th style="width: 100px;">In</th>
+                        <th style="width: 100px;">Out</th>
+                        <th>Source</th>
+                        <th>Destination</th>
+                        <th>Options</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rules.map(rule => `
+                        <tr>
+                            <td><code>${rule.num || '-'}</code></td>
+                            <td><small>${rule.pkts || '-'}</small></td>
+                            <td><small>${rule.bytes || '-'}</small></td>
+                            <td><span class="badge bg-${rule.target === 'ACCEPT' ? 'success' : rule.target === 'DROP' || rule.target === 'REJECT' ? 'danger' : 'secondary'}">${rule.target || '-'}</span></td>
+                            <td><small>${rule.protocol || '-'}</small></td>
+                            <td><small>${rule.opt || '-'}</small></td>
+                            <td><small>${rule.in || '-'}</small></td>
+                            <td><small>${rule.out || '-'}</small></td>
+                            <td><code class="text-break">${rule.source || '-'}</code></td>
+                            <td><code class="text-break">${rule.destination || '-'}</code></td>
+                            <td><small class="text-muted">${rule.options || '-'}</small></td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+    `;
 }
 
 // Import/Export Functions

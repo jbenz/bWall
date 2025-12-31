@@ -727,6 +727,23 @@ def init_database():
                     VALUES (%s, %s)
                 """, (key, value))
             
+            # Initialize default crowdsource list (3FIFTYnet)
+            cursor.execute("SELECT COUNT(*) FROM url_lists WHERE url LIKE '%3FIFTYnet%'")
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("""
+                    INSERT INTO url_lists (name, url, list_type, description, enabled, auto_sync, sync_interval)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    '3FIFTYnet Abusive Subnets',
+                    'https://raw.githubusercontent.com/3FIFTYnet/dbl/refs/heads/main/abusive_subnet_24_blacklist.txt',
+                    'blacklist',
+                    'Community-maintained list of abusive /24 subnets from 3FIFTYnet. Based on known and verifiable abusive and excessive network traffic.',
+                    True,
+                    True,
+                    86400  # Daily sync
+                ))
+                print("[CROWDSOURCE] Added default 3FIFTYnet abusive subnet blacklist")
+            
             # Create default admin user if no users exist
             cursor.execute("SELECT COUNT(*) FROM users")
             if cursor.fetchone()[0] == 0:
@@ -1007,24 +1024,68 @@ def get_stats():
 @app.route('/api/activity', methods=['GET'])
 @require_auth
 def get_activity():
-    """Get recent activity log"""
+    """Get activity log with pagination"""
+    # Get query parameters
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    action_filter = request.args.get('action', '').strip()
+    type_filter = request.args.get('type', '').strip()
+    
+    # Validate pagination
+    page = max(1, page)
+    per_page = max(1, min(per_page, 1000))
+    offset = (page - 1) * per_page
+    
     conn = get_db_connection()
     if not conn:
-        return jsonify([])
+        return jsonify({'entries': [], 'total': 0, 'page': page, 'per_page': per_page, 'pages': 0})
     
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("""
-                SELECT * FROM activity_log
-                ORDER BY timestamp DESC
-                LIMIT 50
-            """)
+            # Build WHERE clause
+            where_conditions = []
+            params = []
+            
+            if action_filter:
+                where_conditions.append("action = %s")
+                params.append(action_filter)
+            
+            if type_filter:
+                where_conditions.append("type = %s")
+                params.append(type_filter)
+            
+            where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+            
+            # Get total count
+            count_query = f"SELECT COUNT(*) as total FROM activity_log WHERE {where_clause}"
+            cursor.execute(count_query, params)
+            total = cursor.fetchone()['total']
+            
+            # Get paginated entries
+            query = f"""
+                SELECT * FROM activity_log 
+                WHERE {where_clause}
+                ORDER BY timestamp DESC 
+                LIMIT %s OFFSET %s
+            """
+            params.extend([per_page, offset])
+            cursor.execute(query, params)
             activities = cursor.fetchall()
+            
             # Convert datetime to string
             for activity in activities:
                 if activity['timestamp']:
                     activity['timestamp'] = activity['timestamp'].isoformat()
-        return jsonify(activities)
+        
+        pages = (total + per_page - 1) // per_page
+        
+        return jsonify({
+            'entries': activities,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'pages': pages
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
@@ -1033,21 +1094,64 @@ def get_activity():
 @app.route('/api/whitelist', methods=['GET'])
 @require_auth
 def get_whitelist():
-    """Get all whitelist entries"""
+    """Get whitelist entries with pagination"""
+    # Get query parameters
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    search = request.args.get('search', '').strip()
+    
+    # Validate pagination
+    page = max(1, page)
+    per_page = max(1, min(per_page, 1000))
+    offset = (page - 1) * per_page
+    
     conn = get_db_connection()
     if not conn:
-        return jsonify([])
+        return jsonify({'entries': [], 'total': 0, 'page': page, 'per_page': per_page, 'pages': 0})
     
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT * FROM whitelist ORDER BY created_at DESC")
+            # Build WHERE clause
+            where_conditions = []
+            params = []
+            
+            if search:
+                where_conditions.append("ip_address LIKE %s")
+                params.append(f'%{search}%')
+            
+            where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+            
+            # Get total count
+            count_query = f"SELECT COUNT(*) as total FROM whitelist WHERE {where_clause}"
+            cursor.execute(count_query, params)
+            total = cursor.fetchone()['total']
+            
+            # Get paginated entries
+            query = f"""
+                SELECT * FROM whitelist 
+                WHERE {where_clause}
+                ORDER BY created_at DESC 
+                LIMIT %s OFFSET %s
+            """
+            params.extend([per_page, offset])
+            cursor.execute(query, params)
             entries = cursor.fetchall()
+            
             for entry in entries:
                 if entry['created_at']:
                     entry['created_at'] = entry['created_at'].isoformat()
                 if entry['updated_at']:
                     entry['updated_at'] = entry['updated_at'].isoformat()
-        return jsonify(entries)
+        
+        pages = (total + per_page - 1) // per_page
+        
+        return jsonify({
+            'entries': entries,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'pages': pages
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
@@ -1129,21 +1233,96 @@ def delete_whitelist(entry_id):
 @app.route('/api/blacklist', methods=['GET'])
 @require_auth
 def get_blacklist():
-    """Get all blacklist entries"""
+    """Get blacklist entries with pagination and filtering"""
+    # Get query parameters
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    source_filter = request.args.get('source', '')  # Filter by source
+    search = request.args.get('search', '').strip()  # Search by IP
+    
+    # Validate pagination
+    page = max(1, page)
+    per_page = max(1, min(per_page, 1000))  # Limit to 1000 per page
+    offset = (page - 1) * per_page
+    
     conn = get_db_connection()
     if not conn:
-        return jsonify([])
+        return jsonify({'entries': [], 'total': 0, 'page': page, 'per_page': per_page, 'pages': 0})
     
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT * FROM blacklist ORDER BY created_at DESC")
+            # Build WHERE clause for filtering
+            where_conditions = []
+            params = []
+            
+            # Source filter - determine source from description
+            if source_filter:
+                if source_filter == 'auto-monitoring':
+                    where_conditions.append("description LIKE %s")
+                    params.append('Auto-blocked:%')
+                elif source_filter == 'crowdsource':
+                    where_conditions.append("description LIKE %s")
+                    params.append('Imported from URL:%')
+                elif source_filter == 'manual':
+                    where_conditions.append("(description LIKE %s OR description LIKE %s)")
+                    params.append('Manually blocked%')
+                    params.append('Permanently banned%')
+                elif source_filter == 'permaban':
+                    where_conditions.append("description LIKE %s")
+                    params.append('Permanently banned%')
+            
+            # Search filter
+            if search:
+                where_conditions.append("ip_address LIKE %s")
+                params.append(f'%{search}%')
+            
+            where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+            
+            # Get total count
+            count_query = f"SELECT COUNT(*) as total FROM blacklist WHERE {where_clause}"
+            cursor.execute(count_query, params)
+            total = cursor.fetchone()['total']
+            
+            # Get paginated entries
+            query = f"""
+                SELECT * FROM blacklist 
+                WHERE {where_clause}
+                ORDER BY created_at DESC 
+                LIMIT %s OFFSET %s
+            """
+            params.extend([per_page, offset])
+            cursor.execute(query, params)
             entries = cursor.fetchall()
+            
+            # Calculate source for each entry
             for entry in entries:
                 if entry['created_at']:
                     entry['created_at'] = entry['created_at'].isoformat()
                 if entry['updated_at']:
                     entry['updated_at'] = entry['updated_at'].isoformat()
-        return jsonify(entries)
+                
+                # Determine source from description
+                desc = entry.get('description', '') or ''
+                if 'Auto-blocked' in desc:
+                    entry['source'] = 'auto-monitoring'
+                elif 'Imported from URL' in desc:
+                    entry['source'] = 'crowdsource'
+                elif 'Permanently banned' in desc:
+                    entry['source'] = 'permaban'
+                elif 'Manually blocked' in desc:
+                    entry['source'] = 'manual'
+                else:
+                    entry['source'] = 'unknown'
+        
+        pages = (total + per_page - 1) // per_page  # Ceiling division
+        
+        return jsonify({
+            'entries': entries,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'pages': pages
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
@@ -1276,34 +1455,223 @@ def delete_blacklist(entry_id):
 @app.route('/api/rules', methods=['GET'])
 @require_auth
 def get_rules():
-    """Get current iptables rules"""
+    """Get current iptables rules organized by chain"""
     try:
-        result = subprocess.run(['iptables', '-L', '-n', '-v', '--line-numbers'],
+        # First, get list of all chains
+        result = subprocess.run(['iptables', '-L', '-n', '--line-numbers'],
                               capture_output=True, text=True, timeout=10)
         
         if result.returncode != 0:
             return jsonify({'error': 'Failed to retrieve iptables rules'}), 500
         
-        rules = []
-        current_chain = None
-        
+        # Extract chain names
+        chains = []
         for line in result.stdout.split('\n'):
             line = line.strip()
             if line.startswith('Chain'):
-                current_chain = line.split()[1]
-            elif line and not line.startswith('target') and 'num' not in line:
+                chain_name = line.split()[1]
+                chains.append(chain_name)
+        
+        # Get rules for each chain
+        chains_data = []
+        for chain in chains:
+            chain_result = subprocess.run(['iptables', '-L', chain, '-n', '-v', '--line-numbers'],
+                                         capture_output=True, text=True, timeout=10)
+            
+            if chain_result.returncode == 0:
+                rules = []
+                lines = chain_result.stdout.split('\n')
+                in_rules = False
+                
+                for line in lines:
+                    line = line.strip()
+                    
+                    # Skip empty lines
+                    if not line:
+                        continue
+                    
+                    # Detect when we're in the rules section
+                    if line.startswith('Chain'):
+                        in_rules = True
+                        continue
+                    
+                    # Skip header line (target prot opt source destination)
+                    if 'target' in line.lower() and 'prot' in line.lower():
+                        continue
+                    
+                    # Skip policy line (e.g., "Chain INPUT (policy ACCEPT)")
+                    if line.startswith('(') and 'policy' in line:
+                        continue
+                    
+                    if in_rules and line:
+                        parts = line.split()
+                        if len(parts) < 2:
+                            continue
+                        
+                        # Parse iptables -L -n -v --line-numbers format:
+                        # num pkts bytes target prot opt in out source destination options
+                        try:
+                            # Check if first part is a number (line number)
+                            if parts[0].isdigit():
+                                rule_num = parts[0]
+                                pkts = parts[1] if len(parts) > 1 else '0'
+                                bytes_count = parts[2] if len(parts) > 2 else '0'
+                                target = parts[3] if len(parts) > 3 else '-'
+                                protocol = parts[4] if len(parts) > 4 else 'all'
+                                opt = parts[5] if len(parts) > 5 else '-'
+                                in_iface = parts[6] if len(parts) > 6 else '*'
+                                out_iface = parts[7] if len(parts) > 7 else '*'
+                                source = parts[8] if len(parts) > 8 else '0.0.0.0/0'
+                                destination = parts[9] if len(parts) > 9 else '0.0.0.0/0'
+                                options = ' '.join(parts[10:]) if len(parts) > 10 else '-'
+                            else:
+                                # No line numbers, parse differently
+                                rule_num = None
+                                pkts = parts[0] if len(parts) > 0 else '0'
+                                bytes_count = parts[1] if len(parts) > 1 else '0'
+                                target = parts[2] if len(parts) > 2 else '-'
+                                protocol = parts[3] if len(parts) > 3 else 'all'
+                                opt = parts[4] if len(parts) > 4 else '-'
+                                in_iface = parts[5] if len(parts) > 5 else '*'
+                                out_iface = parts[6] if len(parts) > 6 else '*'
+                                source = parts[7] if len(parts) > 7 else '0.0.0.0/0'
+                                destination = parts[8] if len(parts) > 8 else '0.0.0.0/0'
+                                options = ' '.join(parts[9:]) if len(parts) > 9 else '-'
+                            
+                            rules.append({
+                                'num': rule_num,
+                                'pkts': pkts,
+                                'bytes': bytes_count,
+                                'target': target,
+                                'protocol': protocol,
+                                'opt': opt,
+                                'in': in_iface,
+                                'out': out_iface,
+                                'source': source,
+                                'destination': destination,
+                                'options': options,
+                                'raw': line
+                            })
+                        except (IndexError, ValueError) as e:
+                            # If parsing fails, still add the raw line
+                            rules.append({
+                                'num': None,
+                                'pkts': '-',
+                                'bytes': '-',
+                                'target': '-',
+                                'protocol': '-',
+                                'opt': '-',
+                                'in': '-',
+                                'out': '-',
+                                'source': '-',
+                                'destination': '-',
+                                'options': line,
+                                'raw': line
+                            })
+                
+                chains_data.append({
+                    'name': chain,
+                    'rule_count': len(rules),
+                    'rules': rules
+                })
+        
+        return jsonify({'chains': chains_data})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/rules/chain/<chain_name>', methods=['GET'])
+@require_auth
+def get_chain_rules(chain_name):
+    """Get rules for a specific chain"""
+    try:
+        result = subprocess.run(['iptables', '-L', chain_name, '-n', '-v', '--line-numbers'],
+                              capture_output=True, text=True, timeout=10)
+        
+        if result.returncode != 0:
+            return jsonify({'error': f'Failed to retrieve rules for chain {chain_name}'}), 500
+        
+        rules = []
+        lines = result.stdout.split('\n')
+        in_rules = False
+        
+        for line in lines:
+            line = line.strip()
+            
+            if not line:
+                continue
+            
+            if line.startswith('Chain'):
+                in_rules = True
+                continue
+            
+            if 'target' in line.lower() and 'prot' in line.lower():
+                continue
+            
+            if line.startswith('(') and 'policy' in line:
+                continue
+            
+            if in_rules and line:
                 parts = line.split()
-                if len(parts) >= 4:
+                if len(parts) < 2:
+                    continue
+                
+                try:
+                    if parts[0].isdigit():
+                        rule_num = parts[0]
+                        pkts = parts[1] if len(parts) > 1 else '0'
+                        bytes_count = parts[2] if len(parts) > 2 else '0'
+                        target = parts[3] if len(parts) > 3 else '-'
+                        protocol = parts[4] if len(parts) > 4 else 'all'
+                        opt = parts[5] if len(parts) > 5 else '-'
+                        in_iface = parts[6] if len(parts) > 6 else '*'
+                        out_iface = parts[7] if len(parts) > 7 else '*'
+                        source = parts[8] if len(parts) > 8 else '0.0.0.0/0'
+                        destination = parts[9] if len(parts) > 9 else '0.0.0.0/0'
+                        options = ' '.join(parts[10:]) if len(parts) > 10 else '-'
+                    else:
+                        rule_num = None
+                        pkts = parts[0] if len(parts) > 0 else '0'
+                        bytes_count = parts[1] if len(parts) > 1 else '0'
+                        target = parts[2] if len(parts) > 2 else '-'
+                        protocol = parts[3] if len(parts) > 3 else 'all'
+                        opt = parts[4] if len(parts) > 4 else '-'
+                        in_iface = parts[5] if len(parts) > 5 else '*'
+                        out_iface = parts[6] if len(parts) > 6 else '*'
+                        source = parts[7] if len(parts) > 7 else '0.0.0.0/0'
+                        destination = parts[8] if len(parts) > 8 else '0.0.0.0/0'
+                        options = ' '.join(parts[9:]) if len(parts) > 9 else '-'
+                    
                     rules.append({
-                        'chain': current_chain,
-                        'target': parts[0],
-                        'protocol': parts[1] if len(parts) > 1 else '-',
-                        'source': parts[3] if len(parts) > 3 else '-',
-                        'destination': parts[4] if len(parts) > 4 else '-',
-                        'options': ' '.join(parts[5:]) if len(parts) > 5 else '-'
+                        'num': rule_num,
+                        'pkts': pkts,
+                        'bytes': bytes_count,
+                        'target': target,
+                        'protocol': protocol,
+                        'opt': opt,
+                        'in': in_iface,
+                        'out': out_iface,
+                        'source': source,
+                        'destination': destination,
+                        'options': options,
+                        'raw': line
+                    })
+                except (IndexError, ValueError):
+                    rules.append({
+                        'num': None,
+                        'pkts': '-',
+                        'bytes': '-',
+                        'target': '-',
+                        'protocol': '-',
+                        'opt': '-',
+                        'in': '-',
+                        'out': '-',
+                        'source': '-',
+                        'destination': '-',
+                        'options': line,
+                        'raw': line
                     })
         
-        return jsonify(rules)
+        return jsonify({'chain': chain_name, 'rules': rules})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -3150,12 +3518,16 @@ def update_oidc_settings():
 
 @app.route('/api/settings/monitoring', methods=['POST'])
 @require_auth
-def update_monitoring_settings():
-    """Update monitoring settings"""
+def update_monitoring_settings_legacy():
+    """Legacy endpoint - redirects to new monitoring settings"""
+    # This endpoint is kept for backward compatibility
+    # New code should use /api/monitoring/settings
+    # Just call the new endpoint handler
     data = request.json
     enabled = data.get('enabled', True)
     services = data.get('services', '')
     
+    # Update .env for backward compatibility
     try:
         env_file = '.env'
         env_lines = []
@@ -3194,11 +3566,8 @@ def update_monitoring_settings():
         with open(env_file, 'w') as f:
             f.writelines(new_lines)
         
-        # Update runtime variables
         os.environ['ENABLE_LOG_MONITORING'] = updated['ENABLE_LOG_MONITORING']
         os.environ['MONITOR_SERVICES'] = services
-        
-        log_activity('update_settings', 'monitoring', 'Monitoring settings updated', 'success')
         
         return jsonify({'message': 'Monitoring settings updated successfully'})
     except Exception as e:
@@ -3491,6 +3860,39 @@ def auto_sync_url_lists():
         
         # Sleep for 60 seconds before checking again
         time.sleep(60)
+
+def prune_abuse_history_task():
+    """Background task to periodically prune abuse history"""
+    while True:
+        try:
+            conn = get_db_connection()
+            if conn:
+                with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                    # Get retention setting
+                    cursor.execute("""
+                        SELECT setting_value FROM system_settings
+                        WHERE setting_key = 'history_retention'
+                    """)
+                    result = cursor.fetchone()
+                    retention_days = int(result['setting_value']) if result else 90
+                    
+                    if retention_days > 0:
+                        # Delete old records
+                        cursor.execute("""
+                            DELETE FROM abuse_history
+                            WHERE timestamp < DATE_SUB(NOW(), INTERVAL %s DAY)
+                        """, (retention_days,))
+                        
+                        deleted = cursor.rowcount
+                        if deleted > 0:
+                            print(f"[HISTORY] Pruned {deleted} abuse history records (retention: {retention_days} days)")
+                        conn.commit()
+            
+            # Run once per day
+            time.sleep(86400)
+        except Exception as e:
+            print(f"[HISTORY] Error in history pruning task: {e}")
+            time.sleep(3600)  # Retry in 1 hour on error
 
 @app.route('/api/monitor/config', methods=['GET'])
 @require_auth
@@ -4125,6 +4527,15 @@ if __name__ == '__main__':
                 print("✓ URL list auto-sync thread started")
             except Exception as e:
                 print(f"⚠ Failed to start URL list auto-sync: {e}")
+            
+            # Start abuse history pruning thread
+            print("Starting abuse history pruning thread...")
+            try:
+                history_prune_thread = threading.Thread(target=prune_abuse_history_task, daemon=True)
+                history_prune_thread.start()
+                print("✓ Abuse history pruning thread started")
+            except Exception as e:
+                print(f"⚠ Failed to start history pruning: {e}")
         else:
             print("⚠ Database not configured. Run installer to set up.")
     else:
