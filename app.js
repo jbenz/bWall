@@ -773,6 +773,10 @@ async function loadSystemSettings() {
                 document.getElementById('monitor-services').value = settings.monitoring.services || '';
             }
         }
+        
+        // Load appearance and proxy settings
+        await loadAppearanceSettings();
+        await loadProxySettings();
     } catch (error) {
         console.error('Error loading system settings:', error);
     }
@@ -1008,32 +1012,265 @@ async function checkAuthentication() {
                 isAuthenticated = true;
                 currentUser = data.user;
                 updateUserInterface();
-            } else if (data.oidc_available === false) {
-                // OIDC not available (e.g., Python 3.13), allow access
-                console.log('OIDC not available, running without authentication');
-                isAuthenticated = true;
+            } else {
+                // Not authenticated - show login modal if local auth is available
+                if (data.local_auth_available && !data.oidc_available) {
+                    showLoginModal();
+                } else if (data.oidc_available) {
+                    // OIDC will handle redirect
+                    console.log('OIDC authentication required');
+                } else {
+                    // No auth available - this shouldn't happen but allow access
+                    console.log('No authentication available');
+                    isAuthenticated = true;
+                }
             }
-            // If authenticated is false but oidc_available is true, 
-            // user needs to authenticate (will be handled by OIDC redirect)
         } else if (response.status === 401 || response.status === 403) {
-            // Check if OIDC is available - if not, allow access
+            // Check what auth is available
             try {
                 const data = await response.json();
-                if (data.oidc_available === false) {
-                    isAuthenticated = true;
-                    return;
+                if (data.local_auth_available && !data.oidc_available) {
+                    showLoginModal();
+                } else if (data.oidc_available) {
+                    // OIDC will handle redirect
+                    console.log('OIDC authentication required');
                 }
             } catch (e) {
-                // If we can't parse response, assume OIDC redirect will handle it
+                // If we can't parse response, show login modal as fallback
+                showLoginModal();
             }
-            // Not authenticated, will be redirected by OIDC if available
-            return;
         }
     } catch (error) {
         console.error('Error checking authentication:', error);
-        // If OIDC is not configured or not available, continue without authentication
-        console.log('Continuing without authentication');
-        isAuthenticated = true; // Allow access if OIDC is not configured
+        // On error, show login modal if we can't determine auth status
+        showLoginModal();
+    }
+}
+
+function showLoginModal() {
+    const loginModal = new bootstrap.Modal(document.getElementById('loginModal'));
+    loginModal.show();
+}
+
+async function performLogin() {
+    const username = document.getElementById('login-username').value.trim();
+    const password = document.getElementById('login-password').value;
+    const errorDiv = document.getElementById('login-error');
+    
+    if (!username || !password) {
+        errorDiv.textContent = 'Username and password are required';
+        errorDiv.style.display = 'block';
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+            // Login successful
+            errorDiv.style.display = 'none';
+            bootstrap.Modal.getInstance(document.getElementById('loginModal')).hide();
+            isAuthenticated = true;
+            currentUser = result.user;
+            updateUserInterface();
+            showAlert('Login successful', 'success');
+            // Reload page data
+            refreshStats();
+        } else {
+            // Login failed
+            errorDiv.textContent = result.error || 'Login failed';
+            errorDiv.style.display = 'block';
+            // Clear password field
+            document.getElementById('login-password').value = '';
+        }
+    } catch (error) {
+        console.error('Error during login:', error);
+        errorDiv.textContent = 'Error connecting to server';
+        errorDiv.style.display = 'block';
+    }
+}
+
+// Allow Enter key to submit login form
+document.addEventListener('DOMContentLoaded', function() {
+    const loginModal = document.getElementById('loginModal');
+    if (loginModal) {
+        loginModal.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter' && e.target.id === 'login-password') {
+                performLogin();
+            }
+        });
+    }
+    
+    // Load public settings (theme, system name, login banner)
+    loadPublicSettings();
+    
+    // Setup proxy settings toggle
+    const enableProxyCheckbox = document.getElementById('enable-proxy');
+    const proxySettingsGroup = document.getElementById('proxy-settings-group');
+    if (enableProxyCheckbox && proxySettingsGroup) {
+        enableProxyCheckbox.addEventListener('change', function() {
+            proxySettingsGroup.style.display = this.checked ? 'block' : 'none';
+        });
+    }
+});
+
+// Load public settings (theme, system name, login banner)
+async function loadPublicSettings() {
+    try {
+        const response = await fetch(`${API_BASE}/settings/public`);
+        if (response.ok) {
+            const settings = await response.json();
+            
+            // Apply theme
+            document.body.className = document.body.className.replace(/dark-theme|btheme/g, '').trim();
+            if (settings.theme && settings.theme !== 'default') {
+                document.body.classList.add(settings.theme === 'dark' ? 'dark-theme' : 'btheme');
+            }
+            
+            // Update system name
+            const sidebarName = document.getElementById('sidebar-system-name');
+            if (sidebarName) {
+                sidebarName.textContent = settings.system_name || 'bWall';
+            }
+            
+            // Update page title
+            const pageTitle = document.getElementById('page-title');
+            if (pageTitle) {
+                pageTitle.textContent = `${settings.system_name || 'bWall'} - Firewall Management Dashboard | bunit.net`;
+            }
+            
+            // Update login banner
+            const loginBannerDisplay = document.getElementById('login-banner-display');
+            if (loginBannerDisplay && settings.login_banner) {
+                loginBannerDisplay.textContent = settings.login_banner;
+                loginBannerDisplay.style.display = 'block';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading public settings:', error);
+    }
+}
+
+// Appearance Settings Functions
+async function loadAppearanceSettings() {
+    try {
+        const response = await fetch(`${API_BASE}/settings/appearance`, fetchOptions);
+        if (response.ok) {
+            const settings = await response.json();
+            
+            document.getElementById('app-theme').value = settings.theme || 'default';
+            document.getElementById('system-name').value = settings.system_name || 'bWall';
+            document.getElementById('login-banner').value = settings.login_banner || '';
+        }
+    } catch (error) {
+        console.error('Error loading appearance settings:', error);
+    }
+}
+
+async function saveAppearanceSettings() {
+    const theme = document.getElementById('app-theme').value;
+    const systemName = document.getElementById('system-name').value.trim();
+    const loginBanner = document.getElementById('login-banner').value.trim();
+    
+    try {
+        const response = await fetch(`${API_BASE}/settings/appearance`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                theme: theme,
+                system_name: systemName,
+                login_banner: loginBanner
+            }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert('Appearance settings saved successfully', 'success');
+            // Reload public settings to apply changes
+            loadPublicSettings();
+        } else {
+            showAlert(result.error || 'Error saving appearance settings', 'danger');
+        }
+    } catch (error) {
+        console.error('Error saving appearance settings:', error);
+        showAlert('Error saving appearance settings', 'danger');
+    }
+}
+
+function loadBannerTemplate() {
+    const template = `WARNING: This is a private computer system. Unauthorized access is strictly prohibited and may be subject to criminal prosecution. All activities on this system are monitored and logged. By accessing this system, you consent to monitoring.`;
+    document.getElementById('login-banner').value = template;
+}
+
+// Proxy Settings Functions
+async function loadProxySettings() {
+    try {
+        const response = await fetch(`${API_BASE}/settings/proxy`, fetchOptions);
+        if (response.ok) {
+            const settings = await response.json();
+            
+            document.getElementById('enable-proxy').checked = settings.enabled || false;
+            document.getElementById('proxy-servers').value = settings.servers || '';
+            document.getElementById('proxy-username').value = settings.username || '';
+            document.getElementById('proxy-password').value = '';
+            document.getElementById('no-proxy').value = settings.no_proxy || 'localhost,127.0.0.1,*.local';
+            
+            // Show/hide proxy settings group
+            const proxySettingsGroup = document.getElementById('proxy-settings-group');
+            if (proxySettingsGroup) {
+                proxySettingsGroup.style.display = settings.enabled ? 'block' : 'none';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading proxy settings:', error);
+    }
+}
+
+async function saveProxySettings() {
+    const enabled = document.getElementById('enable-proxy').checked;
+    const servers = document.getElementById('proxy-servers').value.trim();
+    const username = document.getElementById('proxy-username').value.trim();
+    const password = document.getElementById('proxy-password').value.trim();
+    const noProxy = document.getElementById('no-proxy').value.trim();
+    
+    if (enabled && !servers) {
+        showAlert('Proxy servers are required when proxy is enabled', 'warning');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/settings/proxy`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                enabled: enabled,
+                servers: servers,
+                username: username,
+                password: password || null, // Only send if provided
+                no_proxy: noProxy
+            }),
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        if (response.ok) {
+            showAlert('Proxy settings saved successfully', 'success');
+            // Clear password field
+            document.getElementById('proxy-password').value = '';
+        } else {
+            showAlert(result.error || 'Error saving proxy settings', 'danger');
+        }
+    } catch (error) {
+        console.error('Error saving proxy settings:', error);
+        showAlert('Error saving proxy settings', 'danger');
     }
 }
 
@@ -1042,15 +1279,21 @@ function updateUserInterface() {
     const userName = document.getElementById('user-name');
     
     if (currentUser) {
-        // Display user information (user is an object, not a Map)
+        // Display user information (supports both OIDC and local auth)
         const displayName = currentUser.name || 
                           currentUser.preferred_username || 
+                          currentUser.full_name ||
+                          currentUser.username ||
                           currentUser.email || 
                           'User';
         userName.textContent = displayName;
-        userInfoBar.style.display = 'flex';
+        if (userInfoBar) {
+            userInfoBar.style.display = 'flex';
+        }
     } else {
-        userInfoBar.style.display = 'none';
+        if (userInfoBar) {
+            userInfoBar.style.display = 'none';
+        }
     }
 }
 
@@ -1897,4 +2140,5 @@ function showAlert(message, type) {
         alertDiv.remove();
     }, 5000);
 }
+
 

@@ -14,7 +14,11 @@ import ipaddress
 import requests
 import threading
 import time
-from datetime import datetime
+import secrets
+import bcrypt
+import socket
+import re
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file, session, redirect, url_for
 from flask_cors import CORS
 import pymysql
@@ -149,6 +153,115 @@ DB_CONFIG = {
 # Ensure upload directory exists
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# Get system information for sanitization
+def get_system_info():
+    """Get system IP addresses and hostname for sanitization"""
+    system_info = {
+        'hostname': socket.gethostname(),
+        'fqdn': socket.getfqdn(),
+        'ip_addresses': []
+    }
+    
+    try:
+        # Get all IP addresses
+        hostname = socket.gethostname()
+        primary_ip = socket.gethostbyname(hostname)
+        system_info['ip_addresses'].append(primary_ip)
+        
+        # Try to get additional IPs
+        try:
+            _, _, ip_list = socket.gethostbyname_ex(hostname)
+            system_info['ip_addresses'].extend(ip_list)
+        except:
+            pass
+        
+        # Get localhost IPs
+        system_info['ip_addresses'].extend(['127.0.0.1', '::1', 'localhost'])
+        
+        # Get IP from environment if available
+        app_host = os.getenv('APP_HOST', '')
+        if app_host and app_host != '0.0.0.0':
+            system_info['ip_addresses'].append(app_host)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_ips = []
+        for ip in system_info['ip_addresses']:
+            if ip not in seen:
+                seen.add(ip)
+                unique_ips.append(ip)
+        system_info['ip_addresses'] = unique_ips
+    except Exception as e:
+        print(f"[SANITIZE] Warning: Could not get all system info: {e}")
+    
+    return system_info
+
+SYSTEM_INFO = get_system_info()
+
+def sanitize_abuseipdb_comment(comment, reported_ip):
+    """
+    Sanitize AbuseIPDB comment to remove system-specific information
+    
+    Args:
+        comment: Original comment text
+        reported_ip: The IP being reported (to preserve in comment)
+    
+    Returns:
+        Sanitized comment with "bWall: " prefix
+    """
+    if not comment:
+        comment = ""
+    
+    # Remove system hostname and FQDN
+    if SYSTEM_INFO['hostname']:
+        comment = re.sub(re.escape(SYSTEM_INFO['hostname']), '[HOSTNAME]', comment, flags=re.IGNORECASE)
+    if SYSTEM_INFO['fqdn']:
+        comment = re.sub(re.escape(SYSTEM_INFO['fqdn']), '[FQDN]', comment, flags=re.IGNORECASE)
+    
+    # Remove system IP addresses (but keep the reported IP)
+    for ip in SYSTEM_INFO['ip_addresses']:
+        if ip and ip != reported_ip:
+            # Match IP as whole word or in common patterns
+            ip_pattern = r'\b' + re.escape(ip) + r'\b'
+            comment = re.sub(ip_pattern, '[SYSTEM_IP]', comment, flags=re.IGNORECASE)
+    
+    # Remove common local network patterns (but preserve reported IP)
+    # First, identify all private IPs in the comment
+    private_ip_patterns = [
+        (r'\b10\.\d+\.\d+\.\d+\b', '10.x.x.x'),
+        (r'\b172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+\b', '172.16-31.x.x'),
+        (r'\b192\.168\.\d+\.\d+\b', '192.168.x.x'),
+        (r'\bfc00::[0-9a-fA-F:]+', 'IPv6 ULA'),
+        (r'\bfe80::[0-9a-fA-F:]+', 'IPv6 link-local'),
+    ]
+    
+    for pattern, _ in private_ip_patterns:
+        # Find all matches
+        matches = re.finditer(pattern, comment)
+        # Process in reverse to maintain positions
+        for match in list(matches)[::-1]:
+            matched_ip = match.group(0)
+            # Only replace if it's not the reported IP
+            if matched_ip != reported_ip:
+                start, end = match.span()
+                comment = comment[:start] + '[PRIVATE_IP]' + comment[end:]
+    
+    # Remove file paths that might reveal system info
+    comment = re.sub(r'/[^\s]+', '[PATH]', comment)
+    comment = re.sub(r'[A-Z]:\\[^\s]+', '[PATH]', comment)
+    
+    # Remove email addresses (might reveal domain info)
+    comment = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '[EMAIL]', comment)
+    
+    # Clean up multiple spaces
+    comment = re.sub(r'\s+', ' ', comment).strip()
+    
+    # Prepend "bWall: " if not already present
+    if not comment.startswith('bWall:'):
+        comment = f"bWall: {comment}"
+    
+    return comment
+
 # Initialize AbuseIPDB client
 abuseipdb = AbuseIPDB()
 
@@ -175,11 +288,13 @@ def init_log_monitor():
                         attack_type or 'other',
                         service or ''
                     )
-                    comment = f"Auto-blocked by bWall: {service or 'unknown'} {attack_type or 'attack'}"
+                    comment = f"Auto-blocked: {service or 'unknown'} {attack_type or 'attack'}"
+                    # Sanitize comment before reporting
+                    sanitized_comment = sanitize_abuseipdb_comment(comment, ip)
                     
                     if ABUSEIPDB_MODE == 'automatic':
                         # Report immediately
-                        result = abuseipdb.report_ip(ip, categories, comment)
+                        result = abuseipdb.report_ip(ip, categories, sanitized_comment)
                         if 'error' not in result:
                             print(f"[AbuseIPDB] Reported IP {ip} successfully (automatic)")
                             log_activity('report_abuseipdb', 'abuseipdb', ip, 'success')
@@ -188,7 +303,7 @@ def init_log_monitor():
                             log_activity('report_abuseipdb', 'abuseipdb', ip, 'error')
                     
                     elif ABUSEIPDB_MODE == 'log_and_hold':
-                        # Queue for review
+                        # Queue for review (store original comment, sanitize on submit)
                         queue_abuseipdb_report(ip, categories, comment, service, attack_type, 'auto')
                         print(f"[AbuseIPDB] Queued IP {ip} for review (log_and_hold mode)")
                         log_activity('queue_abuseipdb', 'abuseipdb', ip, 'pending')
@@ -205,20 +320,149 @@ def init_log_monitor():
         log_monitor = LogMonitor(DB_CONFIG, block_callback=block_callback)
     return log_monitor
 
+def hash_password(password):
+    """Hash a password using bcrypt"""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(password, password_hash):
+    """Verify a password against a hash"""
+    try:
+        return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+    except Exception:
+        return False
+
+def validate_password(password):
+    """Validate password meets security requirements"""
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long"
+    if not any(c.isupper() for c in password):
+        return False, "Password must contain at least one uppercase letter"
+    if not any(c.islower() for c in password):
+        return False, "Password must contain at least one lowercase letter"
+    if not any(c.isdigit() for c in password):
+        return False, "Password must contain at least one number"
+    if not any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password):
+        return False, "Password must contain at least one special character"
+    return True, "Password is valid"
+
+def check_local_auth():
+    """Check if user is authenticated via local auth"""
+    if 'local_auth_token' not in session:
+        return False
+    
+    token = session.get('local_auth_token')
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("""
+                SELECT us.*, u.username, u.is_admin, u.is_active
+                FROM user_sessions us
+                JOIN users u ON us.user_id = u.id
+                WHERE us.session_token = %s 
+                AND us.expires_at > NOW()
+                AND u.is_active = TRUE
+            """, (token,))
+            session_data = cursor.fetchone()
+            
+            if session_data:
+                # Update last login
+                cursor.execute("""
+                    UPDATE users SET last_login = NOW() WHERE id = %s
+                """, (session_data['user_id'],))
+                conn.commit()
+                return True
+            else:
+                # Invalid or expired session
+                session.pop('local_auth_token', None)
+                return False
+    except Exception as e:
+        print(f"[AUTH] Error checking local auth: {e}")
+        return False
+    finally:
+        conn.close()
+
 def require_auth(f):
     """Decorator to require authentication for routes"""
+    def wrapper(*args, **kwargs):
+        # First check OIDC if available
+        if auth and OIDC_AVAILABLE:
+            try:
+                # Check if OIDC session exists
+                if 'user' in session:
+                    return f(*args, **kwargs)
+            except:
+                pass
+        
+        # If OIDC not available or not authenticated, check local auth
+        if not check_local_auth():
+            return jsonify({
+                'error': 'Authentication required',
+                'authenticated': False,
+                'auth_type': 'local' if not (auth and OIDC_AVAILABLE) else 'oidc'
+            }), 401
+        
+        # Local auth successful, proceed
+        return f(*args, **kwargs)
+    
+    # If OIDC is available and configured, wrap with OIDC auth
     if auth and OIDC_AVAILABLE:
-        return auth.oidc_auth('default')(f)
-    else:
-        # If OIDC is not configured or not available, allow access (for development)
-        # This allows the app to work without OIDC on Python 3.13
-        # Just return the function as-is (no authentication required)
-        return f
+        # Use OIDC as primary, but allow local auth as fallback
+        def oidc_wrapper(*args, **kwargs):
+            try:
+                # Try OIDC first
+                return auth.oidc_auth('default')(f)(*args, **kwargs)
+            except:
+                # If OIDC fails, try local auth
+                if check_local_auth():
+                    return f(*args, **kwargs)
+                return jsonify({'error': 'Authentication required'}), 401
+        return oidc_wrapper
+    
+    # No OIDC, use local auth wrapper
+    wrapper.__name__ = f.__name__
+    return wrapper
 
 def get_user_info():
     """Get current user information from session"""
+    # Try OIDC first
     if auth and 'user' in session:
         return session.get('user', {})
+    
+    # Try local auth
+    if 'local_auth_token' in session:
+        token = session.get('local_auth_token')
+        conn = get_db_connection()
+        if not conn:
+            return None
+        
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT u.id, u.username, u.email, u.full_name, u.is_admin
+                    FROM user_sessions us
+                    JOIN users u ON us.user_id = u.id
+                    WHERE us.session_token = %s 
+                    AND us.expires_at > NOW()
+                    AND u.is_active = TRUE
+                """, (token,))
+                user_data = cursor.fetchone()
+                if user_data:
+                    return {
+                        'id': user_data['id'],
+                        'username': user_data['username'],
+                        'email': user_data['email'],
+                        'full_name': user_data['full_name'],
+                        'is_admin': user_data['is_admin'],
+                        'auth_type': 'local'
+                    }
+        except Exception as e:
+            print(f"[AUTH] Error getting user info: {e}")
+        finally:
+            conn.close()
+    
     return None
 
 def get_db_connection():
@@ -364,6 +608,140 @@ def init_database():
                     INDEX idx_last_sync (last_sync)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
+            
+            # Users table for local authentication
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    username VARCHAR(100) NOT NULL UNIQUE,
+                    password_hash VARCHAR(255) NOT NULL,
+                    email VARCHAR(255),
+                    full_name VARCHAR(255),
+                    is_active BOOLEAN DEFAULT TRUE,
+                    is_admin BOOLEAN DEFAULT FALSE,
+                    failed_login_attempts INT DEFAULT 0,
+                    locked_until TIMESTAMP NULL,
+                    last_login TIMESTAMP NULL,
+                    password_changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_username (username),
+                    INDEX idx_active (is_active),
+                    INDEX idx_locked (locked_until)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+            
+            # User sessions table for secure session management
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_sessions (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    user_id INT NOT NULL,
+                    session_token VARCHAR(255) NOT NULL UNIQUE,
+                    ip_address VARCHAR(45),
+                    user_agent TEXT,
+                    expires_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_user (user_id),
+                    INDEX idx_token (session_token),
+                    INDEX idx_expires (expires_at),
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+            
+            # System settings table for customization
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    setting_key VARCHAR(100) NOT NULL UNIQUE,
+                    setting_value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_key (setting_key)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+            
+            # Monitored services configuration table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS monitored_services (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    service_name VARCHAR(50) NOT NULL UNIQUE,
+                    enabled BOOLEAN DEFAULT TRUE,
+                    threshold INT DEFAULT 5,
+                    duration_minutes INT DEFAULT 60,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_enabled (enabled),
+                    INDEX idx_service (service_name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+            
+            # Permanent ban blacklist table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS permaban_blacklist (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    ip_address VARCHAR(45) NOT NULL UNIQUE,
+                    abuse_count INT DEFAULT 0,
+                    abuse_score INT DEFAULT 0,
+                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    reason TEXT,
+                    INDEX idx_ip (ip_address),
+                    INDEX idx_score (abuse_score),
+                    INDEX idx_last_seen (last_seen)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+            
+            # Abuse history table for tracking all monitoring events
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS abuse_history (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    ip_address VARCHAR(45) NOT NULL,
+                    service VARCHAR(50),
+                    attack_type VARCHAR(50),
+                    severity VARCHAR(20) DEFAULT 'medium',
+                    blocked BOOLEAN DEFAULT FALSE,
+                    reported_to_abuseipdb BOOLEAN DEFAULT FALSE,
+                    permabanned BOOLEAN DEFAULT FALSE,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_ip (ip_address),
+                    INDEX idx_timestamp (timestamp),
+                    INDEX idx_service (service),
+                    INDEX idx_blocked (blocked)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+            
+            # Initialize default settings if not exist
+            default_settings = [
+                ('theme', 'default'),
+                ('system_name', 'bWall'),
+                ('login_banner', ''),
+                ('proxy_enabled', 'false'),
+                ('proxy_servers', ''),
+                ('proxy_username', ''),
+                ('proxy_password', ''),
+                ('no_proxy', 'localhost,127.0.0.1,*.local')
+            ]
+            
+            for key, value in default_settings:
+                cursor.execute("""
+                    INSERT IGNORE INTO system_settings (setting_key, setting_value)
+                    VALUES (%s, %s)
+                """, (key, value))
+            
+            # Create default admin user if no users exist
+            cursor.execute("SELECT COUNT(*) FROM users")
+            if cursor.fetchone()[0] == 0:
+                try:
+                    # Create default admin user with password 'admin' (must be changed on first login)
+                    default_password = 'admin'
+                    password_hash = bcrypt.hashpw(default_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                    cursor.execute("""
+                        INSERT INTO users (username, password_hash, email, full_name, is_admin, is_active)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, ('admin', password_hash, 'admin@localhost', 'Administrator', True, True))
+                    print("[AUTH] Created default admin user (username: admin, password: admin)")
+                    print("[AUTH] WARNING: Change the default password immediately!")
+                except Exception as e:
+                    print(f"[AUTH] Error creating default admin user: {e}")
             
         conn.commit()
         return True
@@ -808,12 +1186,14 @@ def add_blacklist():
         abuseipdb_handled = False
         if abuseipdb.enabled and data.get('report_to_abuseipdb', False):
             categories = data.get('abuseipdb_categories', ['other'])
-            comment = description or f"Manually blocked via bWall: {ip_address}"
+            comment = description or f"Manually blocked: {ip_address}"
+            # Sanitize comment before reporting
+            sanitized_comment = sanitize_abuseipdb_comment(comment, ip_address)
             
             if ABUSEIPDB_MODE == 'automatic':
                 # Report immediately
                 try:
-                    result = abuseipdb.report_ip(ip_address, categories, comment)
+                    result = abuseipdb.report_ip(ip_address, categories, sanitized_comment)
                     if 'error' not in result:
                         abuseipdb_handled = True
                         log_activity('report_abuseipdb', 'blacklist', ip_address, 'success')
@@ -1594,7 +1974,9 @@ def abuseipdb_report():
     if not categories:
         return jsonify({'error': 'At least one category is required'}), 400
     
-    result = abuseipdb.report_ip(ip_address, categories, comment)
+    # Sanitize comment before reporting
+    sanitized_comment = sanitize_abuseipdb_comment(comment, ip_address)
+    result = abuseipdb.report_ip(ip_address, categories, sanitized_comment)
     
     if 'error' in result:
         return jsonify(result), 500
@@ -1696,7 +2078,10 @@ def abuseipdb_queue_submit():
             for report in reports:
                 try:
                     categories = json.loads(report['categories']) if isinstance(report['categories'], str) else report['categories']
-                    result = abuseipdb.report_ip(report['ip_address'], categories, report['comment'] or '')
+                    # Sanitize comment before submitting
+                    original_comment = report['comment'] or ''
+                    sanitized_comment = sanitize_abuseipdb_comment(original_comment, report['ip_address'])
+                    result = abuseipdb.report_ip(report['ip_address'], categories, sanitized_comment)
                     
                     if 'error' not in result:
                         # Mark as submitted
@@ -2818,6 +3203,183 @@ def update_monitoring_settings():
         return jsonify({'message': 'Monitoring settings updated successfully'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/settings/appearance', methods=['GET'])
+@require_auth
+def get_appearance_settings():
+    """Get appearance and branding settings"""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("""
+                SELECT setting_key, setting_value 
+                FROM system_settings 
+                WHERE setting_key IN ('theme', 'system_name', 'login_banner')
+            """)
+            settings = {row['setting_key']: row['setting_value'] for row in cursor.fetchall()}
+            
+            return jsonify({
+                'theme': settings.get('theme', 'default'),
+                'system_name': settings.get('system_name', 'bWall'),
+                'login_banner': settings.get('login_banner', '')
+            })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/settings/appearance', methods=['POST'])
+@require_auth
+def update_appearance_settings():
+    """Update appearance and branding settings"""
+    data = request.json
+    theme = data.get('theme', 'default')
+    system_name = data.get('system_name', 'bWall')
+    login_banner = data.get('login_banner', '')
+    
+    if theme not in ['default', 'dark', 'btheme']:
+        return jsonify({'error': 'Invalid theme'}), 400
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        with conn.cursor() as cursor:
+            # Update or insert settings
+            for key, value in [('theme', theme), ('system_name', system_name), ('login_banner', login_banner)]:
+                cursor.execute("""
+                    INSERT INTO system_settings (setting_key, setting_value)
+                    VALUES (%s, %s)
+                    ON DUPLICATE KEY UPDATE setting_value = %s
+                """, (key, value, value))
+        
+        conn.commit()
+        log_activity('update_settings', 'appearance', 'Appearance settings updated', 'success')
+        
+        return jsonify({'message': 'Appearance settings updated successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/settings/proxy', methods=['GET'])
+@require_auth
+def get_proxy_settings():
+    """Get proxy configuration settings"""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("""
+                SELECT setting_key, setting_value 
+                FROM system_settings 
+                WHERE setting_key IN ('proxy_enabled', 'proxy_servers', 'proxy_username', 'proxy_password', 'no_proxy')
+            """)
+            settings = {row['setting_key']: row['setting_value'] for row in cursor.fetchall()}
+            
+            return jsonify({
+                'enabled': settings.get('proxy_enabled', 'false') == 'true',
+                'servers': settings.get('proxy_servers', ''),
+                'username': settings.get('proxy_username', ''),
+                'password': '***' if settings.get('proxy_password') else '',
+                'no_proxy': settings.get('no_proxy', 'localhost,127.0.0.1,*.local')
+            })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/settings/proxy', methods=['POST'])
+@require_auth
+def update_proxy_settings():
+    """Update proxy configuration settings"""
+    data = request.json
+    enabled = data.get('enabled', False)
+    servers = data.get('servers', '')
+    username = data.get('username', '')
+    password = data.get('password', '')
+    no_proxy = data.get('no_proxy', 'localhost,127.0.0.1,*.local')
+    
+    # Validate proxy servers format if enabled
+    if enabled and servers:
+        for server in servers.strip().split('\n'):
+            server = server.strip()
+            if server and not (server.startswith('http://') or server.startswith('https://')):
+                return jsonify({'error': f'Invalid proxy server format: {server}. Must start with http:// or https://'}), 400
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        with conn.cursor() as cursor:
+            # Update or insert settings
+            settings = [
+                ('proxy_enabled', 'true' if enabled else 'false'),
+                ('proxy_servers', servers),
+                ('proxy_username', username),
+                ('no_proxy', no_proxy)
+            ]
+            
+            # Only update password if provided (don't overwrite with empty)
+            if password:
+                settings.append(('proxy_password', password))
+            
+            for key, value in settings:
+                cursor.execute("""
+                    INSERT INTO system_settings (setting_key, setting_value)
+                    VALUES (%s, %s)
+                    ON DUPLICATE KEY UPDATE setting_value = %s
+                """, (key, value, value))
+        
+        conn.commit()
+        log_activity('update_settings', 'proxy', 'Proxy settings updated', 'success')
+        
+        return jsonify({'message': 'Proxy settings updated successfully'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/settings/public', methods=['GET'])
+def get_public_settings():
+    """Get public settings (theme, system name, login banner) - no auth required"""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({
+            'theme': 'default',
+            'system_name': 'bWall',
+            'login_banner': ''
+        })
+    
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("""
+                SELECT setting_key, setting_value 
+                FROM system_settings 
+                WHERE setting_key IN ('theme', 'system_name', 'login_banner')
+            """)
+            settings = {row['setting_key']: row['setting_value'] for row in cursor.fetchall()}
+            
+            return jsonify({
+                'theme': settings.get('theme', 'default'),
+                'system_name': settings.get('system_name', 'bWall'),
+                'login_banner': settings.get('login_banner', '')
+            })
+    except Exception as e:
+        return jsonify({
+            'theme': 'default',
+            'system_name': 'bWall',
+            'login_banner': ''
+        })
+    finally:
+        conn.close()
 
 def auto_sync_url_lists():
     """Background task to auto-sync URL lists"""
