@@ -624,6 +624,285 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Reports Tab -->
+                <div id="reports-tab" class="tab-content" style="display: none;">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2 class="mb-0">Reports & Analytics</h2>
+                        <button class="btn btn-primary" onclick="refreshReports()">
+                            <i class="bi bi-arrow-clockwise me-2"></i>Refresh All
+                        </button>
+                    </div>
+
+                    <!-- Report Type Selector -->
+                    <div class="card mb-4">
+                        <div class="card-body">
+                            <div class="btn-group" role="group">
+                                <button type="button" class="btn btn-outline-primary active" onclick="showReport('top-offenders')">
+                                    <i class="bi bi-trophy me-2"></i>Top Offenders
+                                </button>
+                                <button type="button" class="btn btn-outline-primary" onclick="showReport('packet-stats')">
+                                    <i class="bi bi-diagram-3 me-2"></i>Packet Statistics
+                                </button>
+                                <button type="button" class="btn btn-outline-primary" onclick="showReport('chain-stats')">
+                                    <i class="bi bi-list-check me-2"></i>Chain Statistics
+                                </button>
+                                <button type="button" class="btn btn-outline-primary" onclick="showReport('activity-timeline')">
+                                    <i class="bi bi-clock-history me-2"></i>Activity Timeline
+                                </button>
+                                <button type="button" class="btn btn-outline-primary" onclick="showReport('block-summary')">
+                                    <i class="bi bi-shield-slash me-2"></i>Block Summary
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Top Offenders Report -->
+                    <div id="report-top-offenders" class="report-section">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">Top Offenders</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Time Period:</label>
+                                    <select class="form-select form-select-sm d-inline-block" id="top-offenders-period" style="width: auto;" onchange="loadTopOffenders()">
+                                        <option value="24">Last 24 Hours</option>
+                                        <option value="168" selected>Last 7 Days</option>
+                                        <option value="720">Last 30 Days</option>
+                                        <option value="0">All Time</option>
+                                    </select>
+                                </div>
+                                <div class="table-responsive">
+                                    <table class="table table-hover">
+                                        <thead>
+                                            <tr>
+                                                <th>Rank</th>
+                                                <th>IP Address</th>
+                                                <th>Blocks</th>
+                                                <th>First Blocked</th>
+                                                <th>Last Blocked</th>
+                                                <th>Description</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="top-offenders-table">
+                                            <tr>
+                                                <td colspan="6" class="text-center text-muted">Loading...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Packet Statistics Report -->
+                    <div id="report-packet-stats" class="report-section" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-6 mb-4">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h5 class="mb-0">Packets by Chain</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="table-responsive">
+                                            <table class="table table-sm">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Chain</th>
+                                                        <th>Packets</th>
+                                                        <th>Bytes</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="chain-packet-stats-table">
+                                                    <tr>
+                                                        <td colspan="3" class="text-center text-muted">Loading...</td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6 mb-4">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h5 class="mb-0">Top IPs by Packets</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="table-responsive">
+                                            <table class="table table-sm">
+                                                <thead>
+                                                    <tr>
+                                                        <th>IP Address</th>
+                                                        <th>Packets</th>
+                                                        <th>Bytes</th>
+                                                        <th>Chain</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="ip-packet-stats-table">
+                                                    <tr>
+                                                        <td colspan="4" class="text-center text-muted">Loading...</td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Chain Statistics Report -->
+                    <div id="report-chain-stats" class="report-section" style="display: none;">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">Chain Statistics</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="row mb-4">
+                                    <div class="col-md-4">
+                                        <div class="card bg-primary text-white mb-3">
+                                            <div class="card-body">
+                                                <h6>Whitelist Chain</h6>
+                                                <h3 id="whitelist-chain-rules">0</h3>
+                                                <small>Rules</small>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="card bg-danger text-white mb-3">
+                                            <div class="card-body">
+                                                <h6>Blacklist Chain</h6>
+                                                <h3 id="blacklist-chain-rules">0</h3>
+                                                <small>Rules</small>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="card bg-info text-white mb-3">
+                                            <div class="card-body">
+                                                <h6>Rules Chain</h6>
+                                                <h3 id="rules-chain-rules">0</h3>
+                                                <small>Rules</small>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="table-responsive">
+                                    <table class="table table-hover">
+                                        <thead>
+                                            <tr>
+                                                <th>Chain</th>
+                                                <th>Policy</th>
+                                                <th>Packets</th>
+                                                <th>Bytes</th>
+                                                <th>Rules</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="chain-stats-table">
+                                            <tr>
+                                                <td colspan="5" class="text-center text-muted">Loading...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Activity Timeline Report -->
+                    <div id="report-activity-timeline" class="report-section" style="display: none;">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">Activity Timeline</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Time Period:</label>
+                                    <select class="form-select form-select-sm d-inline-block" id="activity-period" style="width: auto;" onchange="loadActivityTimeline()">
+                                        <option value="24">Last 24 Hours</option>
+                                        <option value="168" selected>Last 7 Days</option>
+                                        <option value="720">Last 30 Days</option>
+                                    </select>
+                                </div>
+                                <div class="table-responsive">
+                                    <table class="table table-hover">
+                                        <thead>
+                                            <tr>
+                                                <th>Time</th>
+                                                <th>Action</th>
+                                                <th>Type</th>
+                                                <th>Entry</th>
+                                                <th>Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="activity-timeline-table">
+                                            <tr>
+                                                <td colspan="5" class="text-center text-muted">Loading...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Block Summary Report -->
+                    <div id="report-block-summary" class="report-section" style="display: none;">
+                        <div class="row">
+                            <div class="col-md-6 mb-4">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h5 class="mb-0">Block Statistics</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="mb-3">
+                                            <strong>Total Blocks:</strong> <span id="total-blocks">0</span>
+                                        </div>
+                                        <div class="mb-3">
+                                            <strong>Auto-Blocks:</strong> <span id="auto-blocks">0</span>
+                                        </div>
+                                        <div class="mb-3">
+                                            <strong>Manual Blocks:</strong> <span id="manual-blocks">0</span>
+                                        </div>
+                                        <div class="mb-3">
+                                            <strong>Blocks Today:</strong> <span id="blocks-today">0</span>
+                                        </div>
+                                        <div class="mb-3">
+                                            <strong>Blocks This Week:</strong> <span id="blocks-week">0</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6 mb-4">
+                                <div class="card">
+                                    <div class="card-header">
+                                        <h5 class="mb-0">Block Sources</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="table-responsive">
+                                            <table class="table table-sm">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Source</th>
+                                                        <th>Count</th>
+                                                        <th>Percentage</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="block-sources-table">
+                                                    <tr>
+                                                        <td colspan="3" class="text-center text-muted">Loading...</td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 
                 <!-- Footer -->
                 <footer class="text-center text-muted py-3 mt-4" style="border-top: 1px solid #dee2e6;">

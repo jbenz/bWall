@@ -16,10 +16,24 @@ from flask import Flask, request, jsonify, send_file, session, redirect, url_for
 from flask_cors import CORS
 import pymysql
 from werkzeug.utils import secure_filename
-from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # Fallback: Load .env manually if python-dotenv is not installed
+    if os.path.exists('.env'):
+        print("[INFO] Loading .env file manually (python-dotenv not installed)...")
+        with open('.env') as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line and not line.startswith('#'):
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip()
+        print("[INFO] .env file loaded successfully")
+    else:
+        print("[INFO] No .env file found, using environment variables or defaults")
 
 # Check Python version - OIDC has known issues with Python 3.13
 # The 'future' package used by flask_pyoidc has regex compatibility issues with Python 3.13
@@ -1742,6 +1756,347 @@ def abuseipdb_blacklist():
         return jsonify(result), 500
     
     return jsonify(result)
+
+# Reports API Endpoints
+@app.route('/api/reports/top-offenders', methods=['GET'])
+@require_auth
+def reports_top_offenders():
+    """Get top offenders (most blocked IPs)"""
+    period = request.args.get('period', 168, type=int)  # Default 7 days
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify([])
+    
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            if period > 0:
+                cursor.execute("""
+                    SELECT 
+                        b.ip_address,
+                        b.description,
+                        MIN(b.created_at) as first_blocked,
+                        MAX(b.created_at) as last_blocked,
+                        COUNT(al.id) as block_count
+                    FROM blacklist b
+                    LEFT JOIN activity_log al ON al.entry = b.ip_address 
+                        AND al.type = 'blacklist' 
+                        AND al.timestamp >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+                    WHERE b.created_at >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+                    GROUP BY b.id, b.ip_address, b.description
+                    ORDER BY block_count DESC, b.created_at DESC
+                    LIMIT 50
+                """, (period, period))
+            else:
+                cursor.execute("""
+                    SELECT 
+                        b.ip_address,
+                        b.description,
+                        MIN(b.created_at) as first_blocked,
+                        MAX(b.created_at) as last_blocked,
+                        COUNT(al.id) as block_count
+                    FROM blacklist b
+                    LEFT JOIN activity_log al ON al.entry = b.ip_address AND al.type = 'blacklist'
+                    GROUP BY b.id, b.ip_address, b.description
+                    ORDER BY block_count DESC, b.created_at DESC
+                    LIMIT 50
+                """)
+            
+            results = cursor.fetchall()
+            for result in results:
+                if result.get('first_blocked'):
+                    result['first_blocked'] = result['first_blocked'].isoformat()
+                if result.get('last_blocked'):
+                    result['last_blocked'] = result['last_blocked'].isoformat()
+            
+            return jsonify(results)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/reports/packet-stats', methods=['GET'])
+@require_auth
+def reports_packet_stats():
+    """Get packet statistics by chain and IP"""
+    try:
+        # Get chain statistics
+        chains_data = {}
+        chains = [BWALL_WHITELIST_CHAIN, BWALL_BLACKLIST_CHAIN, BWALL_RULES_CHAIN, 'INPUT']
+        
+        for chain_name in chains:
+            result = subprocess.run(
+                ['iptables', '-L', chain_name, '-n', '-v', '-x'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0:
+                packets = 0
+                bytes_count = 0
+                for line in result.stdout.split('\n'):
+                    # Skip header lines
+                    if line and not line.startswith('Chain') and not line.startswith('target') and not line.startswith('pkts'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            try:
+                                # First column is packets, second is bytes (with -x flag)
+                                pkts = int(parts[0])
+                                bytes_val = int(parts[1])
+                                packets += pkts
+                                bytes_count += bytes_val
+                            except (ValueError, IndexError):
+                                pass
+                
+                chains_data[chain_name] = {
+                    'name': chain_name,
+                    'packets': packets,
+                    'bytes': bytes_count
+                }
+        
+        # Get top IPs by packets (from blacklist and whitelist chains)
+        top_ips = []
+        
+        for chain_name in [BWALL_BLACKLIST_CHAIN, BWALL_WHITELIST_CHAIN]:
+            result = subprocess.run(
+                ['iptables', '-L', chain_name, '-n', '-v', '-x'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if ('DROP' in line or 'ACCEPT' in line) and '-s' in line:
+                        parts = line.split()
+                        try:
+                            pkts = int(parts[0])
+                            bytes_val = int(parts[1])
+                            # Extract IP address - find -s flag and get next token
+                            ip_idx = -1
+                            for i, part in enumerate(parts):
+                                if part == '-s' and i + 1 < len(parts):
+                                    ip_idx = i + 1
+                                    break
+                            
+                            if ip_idx > 0:
+                                ip = parts[ip_idx]
+                                # Validate IP format
+                                if '.' in ip or ':' in ip:
+                                    top_ips.append({
+                                        'ip_address': ip,
+                                        'packets': pkts,
+                                        'bytes': bytes_val,
+                                        'chain': chain_name
+                                    })
+                        except (ValueError, IndexError):
+                            pass
+        
+        # Sort by packets
+        top_ips.sort(key=lambda x: x['packets'], reverse=True)
+        top_ips = top_ips[:20]  # Top 20
+        
+        return jsonify({
+            'chains': list(chains_data.values()),
+            'top_ips': top_ips
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/reports/chain-stats', methods=['GET'])
+@require_auth
+def reports_chain_stats():
+    """Get detailed chain statistics"""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        # Get rule counts from database
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM whitelist")
+            whitelist_rules = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM blacklist")
+            blacklist_rules = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM rules")
+            rules_count = cursor.fetchone()[0]
+        
+        # Get iptables chain statistics
+        chains_data = []
+        chains = [
+            {'name': 'INPUT', 'policy': 'ACCEPT'},
+            {'name': BWALL_WHITELIST_CHAIN, 'policy': 'ACCEPT'},
+            {'name': BWALL_BLACKLIST_CHAIN, 'policy': 'DROP'},
+            {'name': BWALL_RULES_CHAIN, 'policy': 'ACCEPT'}
+        ]
+        
+        for chain_info in chains:
+            chain_name = chain_info['name']
+            result = subprocess.run(
+                ['iptables', '-L', chain_name, '-n', '-v', '-x'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0:
+                packets = 0
+                bytes_count = 0
+                rule_count = 0
+                
+                for line in result.stdout.split('\n'):
+                    if line.startswith('Chain'):
+                        # Extract policy
+                        if 'policy' in line.lower():
+                            parts = line.split()
+                            if 'ACCEPT' in parts:
+                                chain_info['policy'] = 'ACCEPT'
+                            elif 'DROP' in parts:
+                                chain_info['policy'] = 'DROP'
+                    elif line and not line.startswith('target') and not line.startswith('Chain') and not line.startswith('pkts'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            try:
+                                pkts = int(parts[0])
+                                bytes_val = int(parts[1])
+                                packets += pkts
+                                bytes_count += bytes_val
+                                # Count as rule if it has a target (ACCEPT, DROP, etc.)
+                                if len(parts) >= 3 and parts[2] in ['ACCEPT', 'DROP', 'REJECT', 'LOG']:
+                                    rule_count += 1
+                            except (ValueError, IndexError):
+                                pass
+                
+                chains_data.append({
+                    'name': chain_name,
+                    'policy': chain_info['policy'],
+                    'packets': packets,
+                    'bytes': bytes_count,
+                    'rule_count': rule_count
+                })
+        
+        return jsonify({
+            'whitelist_rules': whitelist_rules,
+            'blacklist_rules': blacklist_rules,
+            'rules_count': rules_count,
+            'chains': chains_data
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/reports/activity-timeline', methods=['GET'])
+@require_auth
+def reports_activity_timeline():
+    """Get activity timeline"""
+    period = request.args.get('period', 168, type=int)  # Default 7 days
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify([])
+    
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("""
+                SELECT action, type, entry, status, timestamp
+                FROM activity_log
+                WHERE timestamp >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+                ORDER BY timestamp DESC
+                LIMIT 100
+            """, (period,))
+            
+            results = cursor.fetchall()
+            for result in results:
+                if result.get('timestamp'):
+                    result['timestamp'] = result['timestamp'].isoformat()
+            
+            return jsonify(results)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/reports/block-summary', methods=['GET'])
+@require_auth
+def reports_block_summary():
+    """Get block summary statistics"""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    try:
+        with conn.cursor() as cursor:
+            # Total blocks
+            cursor.execute("SELECT COUNT(*) FROM blacklist")
+            total_blocks = cursor.fetchone()[0]
+            
+            # Auto-blocks (from activity log)
+            cursor.execute("""
+                SELECT COUNT(DISTINCT entry) 
+                FROM activity_log 
+                WHERE action = 'add_blacklist' 
+                AND entry LIKE 'Auto-blocked:%'
+            """)
+            auto_blocks = cursor.fetchone()[0]
+            
+            # Manual blocks
+            manual_blocks = total_blocks - auto_blocks
+            
+            # Blocks today
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM blacklist 
+                WHERE DATE(created_at) = CURDATE()
+            """)
+            blocks_today = cursor.fetchone()[0]
+            
+            # Blocks this week
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM blacklist 
+                WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+            """)
+            blocks_week = cursor.fetchone()[0]
+            
+            # Block sources
+            cursor.execute("""
+                SELECT 
+                    CASE 
+                        WHEN description LIKE 'Auto-blocked:%' THEN 'Auto-Monitoring'
+                        WHEN description LIKE 'Manually blocked%' THEN 'Manual'
+                        ELSE 'Other'
+                    END as source,
+                    COUNT(*) as count
+                FROM blacklist
+                GROUP BY source
+                ORDER BY count DESC
+            """)
+            
+            sources = []
+            for row in cursor.fetchall():
+                sources.append({
+                    'source': row[0],
+                    'count': row[1]
+                })
+        
+        return jsonify({
+            'total_blocks': total_blocks,
+            'auto_blocks': auto_blocks,
+            'manual_blocks': manual_blocks,
+            'blocks_today': blocks_today,
+            'blocks_week': blocks_week,
+            'sources': sources
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
 
 @app.route('/api/monitor/config', methods=['GET'])
 @require_auth

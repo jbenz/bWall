@@ -162,6 +162,252 @@ async function deleteSelectedReports() {
     }
 }
 
+// Reports Functions
+function showReport(reportType) {
+    // Hide all report sections
+    document.querySelectorAll('.report-section').forEach(section => {
+        section.style.display = 'none';
+    });
+    
+    // Remove active class from all buttons
+    document.querySelectorAll('.btn-group .btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    // Show selected report
+    const reportSection = document.getElementById(`report-${reportType}`);
+    if (reportSection) {
+        reportSection.style.display = 'block';
+    }
+    
+    // Add active class to clicked button (if event exists)
+    if (event && event.target) {
+        event.target.classList.add('active');
+    } else {
+        // Find button by onclick attribute
+        const buttons = document.querySelectorAll('.btn-group .btn');
+        buttons.forEach(btn => {
+            if (btn.getAttribute('onclick') && btn.getAttribute('onclick').includes(reportType)) {
+                btn.classList.add('active');
+            }
+        });
+    }
+    
+    // Load report data
+    switch(reportType) {
+        case 'top-offenders':
+            loadTopOffenders();
+            break;
+        case 'packet-stats':
+            loadPacketStats();
+            break;
+        case 'chain-stats':
+            loadChainStats();
+            break;
+        case 'activity-timeline':
+            loadActivityTimeline();
+            break;
+        case 'block-summary':
+            loadBlockSummary();
+            break;
+    }
+}
+
+async function loadReports() {
+    // Load default report (top offenders)
+    showReport('top-offenders');
+    loadTopOffenders();
+}
+
+async function refreshReports() {
+    const activeReport = document.querySelector('.report-section[style*="block"]') || document.getElementById('report-top-offenders');
+    if (activeReport) {
+        const reportId = activeReport.id.replace('report-', '');
+        showReport(reportId);
+    }
+}
+
+async function loadTopOffenders() {
+    const period = document.getElementById('top-offenders-period')?.value || 168;
+    
+    try {
+        const response = await fetch(`${API_BASE}/reports/top-offenders?period=${period}`, fetchOptions);
+        if (response.ok) {
+            const data = await response.json();
+            const tbody = document.getElementById('top-offenders-table');
+            
+            if (data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No data available</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = data.map((item, index) => `
+                <tr>
+                    <td><span class="badge bg-${index < 3 ? 'danger' : 'secondary'}">#${index + 1}</span></td>
+                    <td><code>${item.ip_address}</code></td>
+                    <td><strong>${item.block_count || 0}</strong></td>
+                    <td>${item.first_blocked ? new Date(item.first_blocked).toLocaleString() : 'N/A'}</td>
+                    <td>${item.last_blocked ? new Date(item.last_blocked).toLocaleString() : 'N/A'}</td>
+                    <td>${item.description || '-'}</td>
+                </tr>
+            `).join('');
+        }
+    } catch (error) {
+        console.error('Error loading top offenders:', error);
+        document.getElementById('top-offenders-table').innerHTML = 
+            '<tr><td colspan="6" class="text-center text-danger">Error loading data</td></tr>';
+    }
+}
+
+async function loadPacketStats() {
+    try {
+        const response = await fetch(`${API_BASE}/reports/packet-stats`, fetchOptions);
+        if (response.ok) {
+            const data = await response.json();
+            
+            // Chain packet stats
+            const chainTbody = document.getElementById('chain-packet-stats-table');
+            if (data.chains && data.chains.length > 0) {
+                chainTbody.innerHTML = data.chains.map(chain => `
+                    <tr>
+                        <td><code>${chain.name}</code></td>
+                        <td>${chain.packets.toLocaleString()}</td>
+                        <td>${formatBytes(chain.bytes)}</td>
+                    </tr>
+                `).join('');
+            } else {
+                chainTbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No data available</td></tr>';
+            }
+            
+            // IP packet stats
+            const ipTbody = document.getElementById('ip-packet-stats-table');
+            if (data.top_ips && data.top_ips.length > 0) {
+                ipTbody.innerHTML = data.top_ips.map(ip => `
+                    <tr>
+                        <td><code>${ip.ip_address}</code></td>
+                        <td>${ip.packets.toLocaleString()}</td>
+                        <td>${formatBytes(ip.bytes)}</td>
+                        <td><span class="badge bg-info">${ip.chain}</span></td>
+                    </tr>
+                `).join('');
+            } else {
+                ipTbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No data available</td></tr>';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading packet stats:', error);
+    }
+}
+
+async function loadChainStats() {
+    try {
+        const response = await fetch(`${API_BASE}/reports/chain-stats`, fetchOptions);
+        if (response.ok) {
+            const data = await response.json();
+            
+            // Update summary cards
+            document.getElementById('whitelist-chain-rules').textContent = data.whitelist_rules || 0;
+            document.getElementById('blacklist-chain-rules').textContent = data.blacklist_rules || 0;
+            document.getElementById('rules-chain-rules').textContent = data.rules_count || 0;
+            
+            // Chain details table
+            const tbody = document.getElementById('chain-stats-table');
+            if (data.chains && data.chains.length > 0) {
+                tbody.innerHTML = data.chains.map(chain => `
+                    <tr>
+                        <td><code>${chain.name}</code></td>
+                        <td><span class="badge bg-${chain.policy === 'ACCEPT' ? 'success' : chain.policy === 'DROP' ? 'danger' : 'secondary'}">${chain.policy}</span></td>
+                        <td>${chain.packets.toLocaleString()}</td>
+                        <td>${formatBytes(chain.bytes)}</td>
+                        <td>${chain.rule_count}</td>
+                    </tr>
+                `).join('');
+            } else {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No data available</td></tr>';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading chain stats:', error);
+    }
+}
+
+async function loadActivityTimeline() {
+    const period = document.getElementById('activity-period')?.value || 168;
+    
+    try {
+        const response = await fetch(`${API_BASE}/reports/activity-timeline?period=${period}`, fetchOptions);
+        if (response.ok) {
+            const data = await response.json();
+            const tbody = document.getElementById('activity-timeline-table');
+            
+            if (data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No activity in selected period</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = data.map(activity => `
+                <tr>
+                    <td>${new Date(activity.timestamp).toLocaleString()}</td>
+                    <td><span class="badge bg-info">${activity.action}</span></td>
+                    <td>${activity.type || '-'}</td>
+                    <td><code>${activity.entry || '-'}</code></td>
+                    <td><span class="badge bg-${activity.status === 'success' ? 'success' : activity.status === 'error' ? 'danger' : 'warning'}">${activity.status}</span></td>
+                </tr>
+            `).join('');
+        }
+    } catch (error) {
+        console.error('Error loading activity timeline:', error);
+    }
+}
+
+async function loadBlockSummary() {
+    try {
+        const response = await fetch(`${API_BASE}/reports/block-summary`, fetchOptions);
+        if (response.ok) {
+            const data = await response.json();
+            
+            // Update summary stats
+            document.getElementById('total-blocks').textContent = data.total_blocks || 0;
+            document.getElementById('auto-blocks').textContent = data.auto_blocks || 0;
+            document.getElementById('manual-blocks').textContent = data.manual_blocks || 0;
+            document.getElementById('blocks-today').textContent = data.blocks_today || 0;
+            document.getElementById('blocks-week').textContent = data.blocks_week || 0;
+            
+            // Block sources table
+            const tbody = document.getElementById('block-sources-table');
+            if (data.sources && data.sources.length > 0) {
+                const total = data.sources.reduce((sum, s) => sum + s.count, 0);
+                tbody.innerHTML = data.sources.map(source => {
+                    const percentage = total > 0 ? ((source.count / total) * 100).toFixed(1) : 0;
+                    return `
+                        <tr>
+                            <td>${source.source}</td>
+                            <td>${source.count}</td>
+                            <td>
+                                <div class="progress" style="height: 20px;">
+                                    <div class="progress-bar" role="progressbar" style="width: ${percentage}%">${percentage}%</div>
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } else {
+                tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No data available</td></tr>';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading block summary:', error);
+    }
+}
+
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
 // Tab Navigation
 document.addEventListener('DOMContentLoaded', function() {
     console.log('=== bWall Dashboard Initialization ===');
@@ -378,6 +624,10 @@ function switchTab(tabName) {
                 break;
             case 'import-export':
                 console.log('Import/Export tab - no data to load');
+                break;
+            case 'reports':
+                console.log('Loading reports data...');
+                loadReports();
                 break;
             default:
                 console.warn('Unknown tab:', tabName);
